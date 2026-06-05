@@ -1,6 +1,6 @@
 ---
 name: scoping-linear-tickets
-description: Manual-invoke only — do NOT auto-trigger. Scopes a pasted Linear ticket into a structured brief (what it achieves, how it fits the epic, localhost before/after, grill questions or files-to-touch). Use ONLY when Alan explicitly runs /scoping-linear-tickets or names the skill.
+description: Manual-invoke only — do NOT auto-trigger. Scopes a pasted Linear ticket into a structured brief (what it achieves, how it fits the epic, localhost before/after, grill questions or files-to-touch). Use ONLY when the user explicitly runs /scoping-linear-tickets or names the skill.
 ---
 
 # Scoping Linear Tickets
@@ -13,10 +13,10 @@ Turn a pasted Linear ticket into a tight scoping brief. The brief answers: what 
 
 ## Workflow
 
-### 1. Work from what Alan pasted
+### 1. Work from what the user pasted
 
-- Alan usually pastes the ticket content directly — that **is** the source. Use it. Do **not** re-fetch it from the Linear MCP; he pastes it precisely to save tokens.
-- **Only** touch the Linear MCP when: he pasted a bare ID/URL with no content, or he explicitly asks you to pull something.
+- The user usually pastes the ticket content directly — that **is** the source. Use it. Do **not** re-fetch it from the Linear MCP; they paste it precisely to save tokens.
+- **Only** touch the Linear MCP when: they paste a bare ID/URL with no content, or they explicitly ask you to pull something.
 - Need parent/epic context for section 2 and it wasn't pasted? Then you can auto-fetch.
 
 ### 2. Explore the codebase
@@ -47,7 +47,7 @@ Always produce sections 1–3, then either 4a or 4b — not both. Keep it scanna
 
 | Mistake                                  | Fix                                                                                      |
 | ---------------------------------------- | ---------------------------------------------------------------------------------------- |
-| Re-fetching a ticket Alan already pasted | Use the pasted content; only fetch a bare ID/URL or on explicit request                  |
+| Re-fetching a ticket the user already pasted | Use the pasted content; only fetch a bare ID/URL or on explicit request                  |
 | Skipping the epic for a sub-ticket       | Section 2 still needs it — if the parent wasn't pasted, say so rather than auto-fetching |
 | Trusting the ticket's codebase claims    | Verify tables/services/routes exist before listing them                                  |
 | Dumping every question at once           | One at a time, each with a recommendation                                                |

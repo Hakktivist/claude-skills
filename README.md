@@ -12,8 +12,10 @@ slash command (e.g. `/scoping-linear-tickets`) or by naming the skill.
 | [`scoping-linear-tickets`](skills/scoping-linear-tickets/) | Scopes a pasted Linear ticket into a structured brief — what it achieves, how it fits the epic, localhost before/after, and grill questions or files-to-touch. |
 | [`build-and-codex-review`](skills/build-and-codex-review/) | After a scoping brief is green-lit: builds the change, writes a handoff, derives concern lenses, and runs a Workflow that loops codex adversarial reviews into code-reading fixers until reviews come back clean. |
 | [`address-review-comments`](skills/address-review-comments/) | Investigates PR review comments (pasted or pulled via `gh`), scores each by confidence, then fixes, surfaces options with a recommendation, or reports uncertainty. |
+| [`subagent-driven-development`](skills/subagent-driven-development/) | Executes implementation plans with independent tasks in the current session, driven by subagents. |
+| [`test-driven-development`](skills/test-driven-development/) | Write the failing test first, then the implementation — for any feature or bugfix. |
 
-These pair up as a workflow: **scope** a ticket → **build & review** it → **address** the review comments that come back.
+The first three pair up as a workflow: **scope** a ticket → **build & review** it → **address** the review comments that come back.
 
 ## Install
 
