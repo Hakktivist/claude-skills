@@ -19,7 +19,15 @@ The post-green-light pipeline: **build → handoff → codex-review-loop**. You 
 Implement the green-lit brief. For multi-task plans, use [[subagent-driven-development]]; otherwise build directly with [[test-driven-development]]. Do **not** commit — the loop reviews the working tree.
 
 ### 2. Write the handoff
-Copy `handoff-template.md` (in this skill's directory) and fill it in for what you just built. The concern map (section 3) is the important part — it's where review lenses come from. The template's first line tells every downstream agent: **this is context, not ground truth — verify against the code.** Keep it honest about soft spots; that's where review pays off. Save it (e.g. `HANDOFF.md` at repo root, or a temp path).
+Copy `handoff-template.md` (in this skill's directory) and fill it in for what you just built. The concern map (section 3) is the important part — it's where review lenses come from. The template's first line tells every downstream agent: **this is context, not ground truth — verify against the code.** Keep it honest about soft spots; that's where review pays off.
+
+**Always write the handoff into a fresh temp dir — never the repo.** The loop reviews the working tree *including untracked files*, so a `HANDOFF.md` at repo root would pollute the very review it feeds (and dirty git). Mint a unique dir each run with `mktemp -d` and write `HANDOFF.md` inside it:
+```sh
+HANDOFF_DIR=$(mktemp -d "${TMPDIR:-/tmp}/bcr-handoff.XXXXXX")
+# write the filled-in template to "$HANDOFF_DIR/HANDOFF.md"
+echo "$HANDOFF_DIR/HANDOFF.md"
+```
+Note the printed path so you can reference it later; pass its full text as `args.handoff` in step 4.
 
 ### 3. Derive concern lenses
 From the handoff's concern map, write **≤3 distinct lenses** — one focused review angle each (e.g. `"the auth-token refresh path and its race conditions"`, `"the data migration's backfill correctness"`). More passes ≠ better; 3 is the max for a reason. One concern → one lens.
@@ -50,6 +58,7 @@ Then stop. Do not commit or push unless the user says so.
 | --- | --- |
 | Scoping the ticket here | Precondition — the user runs `/scoping-linear-tickets` first |
 | Committing before review | Loop reviews the working tree; leave it uncommitted |
+| Writing `HANDOFF.md` into the repo | It's an untracked file the working-tree review would flag; always `mktemp -d` it outside the repo |
 | Writing >3 lenses to "be thorough" | 3 max; more passes just add noise. One concern → one lens |
 | Handoff written as ground truth | It's the builder's belief; the template says verify against code, and fixers do |
 | Letting the orchestrator (you) review code | You stay lean — codex reviews, fixers read code. You derive lenses and aggregate |
