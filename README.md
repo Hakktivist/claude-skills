@@ -15,23 +15,29 @@ with their slash command (e.g. `/scoping-linear-tickets`) or by naming the skill
 
 These three pair up as a workflow: **scope** a ticket → **build & review** it → **address** the review comments that come back.
 
-## Dependency skills
+## Supporting skills
 
-The skills above (and each other) reference these supporting skills, vendored here so the
-repo is self-contained. They're copies of the [superpowers](https://github.com/obra/superpowers) skill set:
+The rest of the repo vendors the [superpowers](https://github.com/obra/superpowers) skill set
+so it's self-contained — both the skills the custom three (transitively) depend on and the
+general-purpose helpers. Excludes `daily-update` and `find-skills`.
 
-| Skill | Referenced by |
+| Skill | Role |
 | --- | --- |
-| [`subagent-driven-development`](skills/subagent-driven-development/) | `build-and-codex-review` |
-| [`test-driven-development`](skills/test-driven-development/) | `build-and-codex-review`, `subagent-driven-development` |
-| [`receiving-code-review`](skills/receiving-code-review/) | `address-review-comments` |
-| [`requesting-code-review`](skills/requesting-code-review/) | `subagent-driven-development` |
-| [`writing-plans`](skills/writing-plans/) | `subagent-driven-development` |
-| [`executing-plans`](skills/executing-plans/) | `subagent-driven-development` |
-| [`using-git-worktrees`](skills/using-git-worktrees/) | `subagent-driven-development` |
-| [`finishing-a-development-branch`](skills/finishing-a-development-branch/) | `subagent-driven-development` |
-| [`grill-me`](skills/grill-me/) | `scoping-linear-tickets` |
-| [`brainstorming`](skills/brainstorming/) | `writing-plans`, others |
+| [`subagent-driven-development`](skills/subagent-driven-development/) | Dep of `build-and-codex-review` |
+| [`test-driven-development`](skills/test-driven-development/) | Dep of `build-and-codex-review`, `subagent-driven-development` |
+| [`receiving-code-review`](skills/receiving-code-review/) | Dep of `address-review-comments` |
+| [`requesting-code-review`](skills/requesting-code-review/) | Dep of `subagent-driven-development` |
+| [`writing-plans`](skills/writing-plans/) | Dep of `subagent-driven-development` |
+| [`executing-plans`](skills/executing-plans/) | Dep of `subagent-driven-development` |
+| [`using-git-worktrees`](skills/using-git-worktrees/) | Dep of `subagent-driven-development` |
+| [`finishing-a-development-branch`](skills/finishing-a-development-branch/) | Dep of `subagent-driven-development` |
+| [`grill-me`](skills/grill-me/) | Dep of `scoping-linear-tickets` |
+| [`brainstorming`](skills/brainstorming/) | Dep of `writing-plans` |
+| [`systematic-debugging`](skills/systematic-debugging/) | General-purpose |
+| [`verification-before-completion`](skills/verification-before-completion/) | General-purpose |
+| [`dispatching-parallel-agents`](skills/dispatching-parallel-agents/) | General-purpose |
+| [`using-superpowers`](skills/using-superpowers/) | General-purpose |
+| [`writing-skills`](skills/writing-skills/) | General-purpose |
 
 ## Install
 
