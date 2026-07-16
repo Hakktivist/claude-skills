@@ -12,8 +12,9 @@ with their slash command (e.g. `/scoping-linear-tickets`) or by naming the skill
 | [`scoping-linear-tickets`](skills/scoping-linear-tickets/) | Scopes a pasted Linear ticket into a structured brief — what it achieves, how it fits the epic, localhost before/after, and grill questions or files-to-touch. |
 | [`build-and-codex-review`](skills/build-and-codex-review/) | After a scoping brief is green-lit: builds the change, writes a handoff, derives concern lenses, and runs a Workflow that loops codex adversarial reviews into code-reading fixers until reviews come back clean. |
 | [`address-review-comments`](skills/address-review-comments/) | Investigates PR review comments (pasted or pulled via `gh`), scores each by confidence, then fixes, surfaces options with a recommendation, or reports uncertainty. |
+| [`review-buddy`](skills/review-buddy/) | Interactive pair-reviewer: gathers the diff (uncommitted files, open PR) and the ticket, then walks the changed files one at a time on your lead — what each does, whether it matches the ticket's intent, and any gaps. Pairs with `/manual-review`. |
 
-These three pair up as a workflow: **scope** a ticket → **build & review** it → **address** the review comments that come back.
+These pair up as a workflow: **scope** a ticket → **build & review** it → **address** the review comments that come back. `review-buddy` sits alongside for a manual, file-by-file pass with a human in the loop.
 
 ## Supporting skills
 
@@ -31,6 +32,7 @@ general-purpose helpers. Excludes `daily-update` and `find-skills`.
 | [`executing-plans`](skills/executing-plans/) | Dep of `subagent-driven-development` |
 | [`using-git-worktrees`](skills/using-git-worktrees/) | Dep of `subagent-driven-development` |
 | [`finishing-a-development-branch`](skills/finishing-a-development-branch/) | Dep of `subagent-driven-development` |
+| [`manual-review`](skills/manual-review/) | Dep of `review-buddy`; lists changed files in review order |
 | [`grill-me`](skills/grill-me/) | Dep of `scoping-linear-tickets` |
 | [`brainstorming`](skills/brainstorming/) | Dep of `writing-plans` |
 | [`systematic-debugging`](skills/systematic-debugging/) | General-purpose |
