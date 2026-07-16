@@ -98,11 +98,24 @@ function findingKey(f) {
   return `${(f.file || '').trim()}:${f.line_start || 0}:${(f.title || '').trim().toLowerCase()}`
 }
 
-function reviewPrompt(lens, i) {
+function reviewPrompt(lens, i, suppress) {
+  // Everything already surfaced to the human is fed back to codex so it stops
+  // re-analyzing and re-reporting the same topics every round. This is semantic
+  // (codex reads the descriptions), so it survives title/line drift that the
+  // exact-key dedup below misses — and it saves credits UPSTREAM, before codex
+  // spends them, not just downstream in Claude.
+  const suppressBlock = (suppress && suppress.length)
+    ? `\n\nALREADY ADJUDICATED — DO NOT RE-REPORT. Each item below has already been reviewed ` +
+      `by a code-reading fixer or by the human, and was resolved, deferred to the human, or judged ` +
+      `intentional. Do NOT raise any of these again — even if the code still looks wrong, the decision ` +
+      `is already made and re-reporting only wastes review budget. Report ONLY issues NOT in this list:\n` +
+      suppress.map((s, n) => `${n + 1}. [${s.file}] ${s.title} — ${s.disposition}${s.reason ? `: ${s.reason}` : ''}`).join('\n')
+    : ''
   const focusText =
     `FOCUS: ${lens}. ` +
     `Use the handoff below as CONTEXT only — do NOT trust it as ground truth; verify against the real diff. ` +
-    `Handoff:\n${handoff}`
+    `Handoff:\n${handoff}` +
+    suppressBlock
   const focusFile = `/tmp/codex-focus-lens${i + 1}.txt`
   return (
     `You are a codex review RUNNER. Do not review the code yourself and do not fix anything. ` +
@@ -160,11 +173,22 @@ let dry = 0
 
 while (round < maxRounds && dry < 1) {
   round++
-  log(`Round ${round}: ${lenses.length} codex lens review(s) over the ${scope}`)
+  // Build the "already adjudicated" ledger from everything surfaced to the human so far
+  // (needs-pick / intent-check / unclear/rejected) and feed it into codex's focus this round
+  // so it doesn't re-raise the same topics. Fixed items are intentionally NOT here — we still
+  // want codex to re-check that fixes held (a re-flag of a fix escalates below).
+  const suppress = allHitl.map(h => ({
+    file: (h.file || 'UNKNOWN').trim(),
+    title: (h.title || '(untitled)').trim(),
+    disposition: h.action || 'deferred',
+    reason: (h.detail || '').replace(/\s+/g, ' ').trim().slice(0, 200),
+  }))
+  log(`Round ${round}: ${lenses.length} codex lens review(s) over the ${scope}` +
+    (suppress.length ? ` — suppressing ${suppress.length} already-adjudicated item(s)` : ''))
 
   const reviews = (await parallel(
     lenses.map((lens, i) => () =>
-      agent(reviewPrompt(lens, i), { label: `review:lens${i + 1}`, phase: 'Review', schema: FINDINGS_SCHEMA, model: runnerModel })
+      agent(reviewPrompt(lens, i, suppress), { label: `review:lens${i + 1}`, phase: 'Review', schema: FINDINGS_SCHEMA, model: runnerModel })
     )
   )).filter(Boolean)
 
