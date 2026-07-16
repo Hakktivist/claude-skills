@@ -40,9 +40,12 @@ Invoke the **Workflow** tool with `scriptPath` set to this skill's `codex-review
   scope: "working-tree",    // staged + unstaged + untracked
   base: undefined,          // or a ref for branch review
   maxRounds: 3,
-  arcSkillPath: "/Users/alannguyen/.claude/skills/address-review-comments/SKILL.md" }
+  arcSkillPath: "/Users/alannguyen/.claude/skills/address-review-comments/SKILL.md",
+  runnerModel: "sonnet" }   // review RUNNERS only; omit to keep the default
 ```
 The Workflow runs each lens as a codex adversarial-review, dedups findings, dispatches one code-reading fixer per file (applying [[address-review-comments]]'s two-dimensional matrix), and loops until codex stops raising fresh findings or only HITL items remain. This is an explicit, skill-directed Workflow invocation — that's the opt-in; just call it.
+
+**Review runners are pinned to a cheap model (`runnerModel`, default `sonnet`).** They do no code reasoning — they invoke codex and transcribe its JSON findings — so running them on your session model just burns tokens. The **fixers stay on the session model**: they do the real claim-accuracy/intent judgment and the edits, so they are deliberately *not* pinned.
 
 ### 5. Present results
 When the Workflow returns, relay its `note`, then:

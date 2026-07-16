@@ -14,6 +14,10 @@ export const meta = {
 // args.base:        string?   optional --base ref
 // args.maxRounds:   number    safety cap (default 3)
 // args.arcSkillPath:string    absolute path to address-review-comments/SKILL.md
+// args.runnerModel: string?   model for the codex review-RUNNER agents (default 'sonnet').
+//                             Runners only invoke codex + transcribe its JSON — no code
+//                             reasoning — so a cheap model is the right fit. Fixers are NOT
+//                             pinned here; they do the real judgment and inherit the session model.
 const lenses = (args && args.lenses && args.lenses.length) ? args.lenses.slice(0, 3) : ['overall correctness and design risk']
 const handoff = (args && args.handoff) || 'No handoff provided. Review the working tree on its own merits.'
 // scope goes straight into the shell command, so constrain it to the companion's
@@ -25,6 +29,9 @@ if (scopeArg && scope !== scopeArg) log(`WARNING: invalid scope "${scopeArg}" �
 const base = args && args.base
 const maxRounds = (args && args.maxRounds) || 3
 const arcSkillPath = (args && args.arcSkillPath) || '/Users/alannguyen/.claude/skills/address-review-comments/SKILL.md'
+// Review runners do zero code reasoning (invoke codex, transcribe its JSON) — pin them to a
+// cheap model by default so a strong session model isn't burned on mechanical transcription.
+const runnerModel = (args && args.runnerModel) || 'sonnet'
 // Only allow git-ref-safe characters into the shell command. Anything with shell
 // metacharacters is rejected (and surfaced) rather than silently interpolated.
 const SAFE_REF = /^[A-Za-z0-9._/-]+$/
@@ -157,7 +164,7 @@ while (round < maxRounds && dry < 1) {
 
   const reviews = (await parallel(
     lenses.map((lens, i) => () =>
-      agent(reviewPrompt(lens, i), { label: `review:lens${i + 1}`, phase: 'Review', schema: FINDINGS_SCHEMA })
+      agent(reviewPrompt(lens, i), { label: `review:lens${i + 1}`, phase: 'Review', schema: FINDINGS_SCHEMA, model: runnerModel })
     )
   )).filter(Boolean)
 
