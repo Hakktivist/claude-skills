@@ -45,6 +45,8 @@ Invoke the **Workflow** tool with `scriptPath` set to this skill's `codex-review
 ```
 The Workflow runs each lens as a codex adversarial-review, dedups findings, dispatches one code-reading fixer per file (applying [[address-review-comments]]'s two-dimensional matrix), and loops until codex stops raising fresh findings or only HITL items remain. This is an explicit, skill-directed Workflow invocation — that's the opt-in; just call it.
 
+**`lenses` and `handoff` are required.** The script parses stringified-args deliveries itself and throws `lenses/handoff missing` if the review spec still isn't there — it will never fall back to a generic single-lens review. If it throws, relaunch with `args` as a real JSON object; do not hardcode a temp copy of the script.
+
 **Adjudicated items are fed back to codex each round.** HITL items aren't fixed, so the code stays the same and codex would otherwise re-flag them every round — wasting review credits. Once an item is surfaced to the human (needs-pick / intent-check / unclear), the loop injects it into the next round's codex focus as an "already adjudicated — do not re-report" list, so codex stops re-analyzing it. Fixes are *not* suppressed — codex still re-checks that they held.
 
 **Review runners are pinned to a cheap model (`runnerModel`, default `sonnet`).** They do no code reasoning — they invoke codex and transcribe its JSON findings — so running them on your session model just burns tokens. The **fixers stay on the session model**: they do the real claim-accuracy/intent judgment and the edits, so they are deliberately *not* pinned.

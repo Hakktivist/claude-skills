@@ -8,8 +8,10 @@ export const meta = {
 }
 
 // ---- args ----------------------------------------------------------------
+// REQUIRED — the run refuses to start without a real review spec:
 // args.lenses:      string[]  concern focuses derived from the handoff (<=3)
 // args.handoff:     string    the handoff text, inlined (context, NOT ground truth)
+// Optional knobs (these keep defaults):
 // args.scope:       string    codex --scope (default 'working-tree')
 // args.base:        string?   optional --base ref
 // args.maxRounds:   number    safety cap (default 3)
@@ -18,20 +20,30 @@ export const meta = {
 //                             Runners only invoke codex + transcribe its JSON — no code
 //                             reasoning — so a cheap model is the right fit. Fixers are NOT
 //                             pinned here; they do the real judgment and inherit the session model.
-const lenses = (args && args.lenses && args.lenses.length) ? args.lenses.slice(0, 3) : ['overall correctness and design risk']
-const handoff = (args && args.handoff) || 'No handoff provided. Review the working tree on its own merits.'
+//
+// The harness sometimes delivers args as a JSON-encoded STRING; reading .lenses off a
+// string yields undefined, and the old defaults silently degraded the run to a generic
+// single-lens review with no handoff — a blind pass that could return a false clean bill.
+// So: parse the string form back, and if the review spec still isn't there, die loudly
+// before any codex spend. A review harness that loses its spec must fail, not improvise.
+const a = typeof args === 'string' ? JSON.parse(args) : args
+if (!a || !Array.isArray(a.lenses) || !a.lenses.length || typeof a.handoff !== 'string' || !a.handoff.length) {
+  throw new Error(`codex-review-loop: lenses/handoff missing (typeof args=${typeof args}) — refusing to run the default-lens fallback`)
+}
+const lenses = a.lenses.slice(0, 3)
+const handoff = a.handoff
 // scope goes straight into the shell command, so constrain it to the companion's
 // accepted enum — never trust args. Anything else falls back to working-tree.
 const SCOPES = ['auto', 'working-tree', 'branch']
-const scopeArg = args && args.scope
+const scopeArg = a.scope
 const scope = SCOPES.includes(scopeArg) ? scopeArg : 'working-tree'
 if (scopeArg && scope !== scopeArg) log(`WARNING: invalid scope "${scopeArg}" — falling back to working-tree.`)
-const base = args && args.base
-const maxRounds = (args && args.maxRounds) || 3
-const arcSkillPath = (args && args.arcSkillPath) || '/Users/alannguyen/.claude/skills/address-review-comments/SKILL.md'
+const base = a.base
+const maxRounds = a.maxRounds || 3
+const arcSkillPath = a.arcSkillPath || '/Users/alannguyen/.claude/skills/address-review-comments/SKILL.md'
 // Review runners do zero code reasoning (invoke codex, transcribe its JSON) — pin them to a
 // cheap model by default so a strong session model isn't burned on mechanical transcription.
-const runnerModel = (args && args.runnerModel) || 'sonnet'
+const runnerModel = a.runnerModel || 'sonnet'
 // Only allow git-ref-safe characters into the shell command. Anything with shell
 // metacharacters is rejected (and surfaced) rather than silently interpolated.
 const SAFE_REF = /^[A-Za-z0-9._/-]+$/
@@ -116,22 +128,30 @@ function reviewPrompt(lens, i, suppress) {
     `Use the handoff below as CONTEXT only — do NOT trust it as ground truth; verify against the real diff. ` +
     `Handoff:\n${handoff}` +
     suppressBlock
-  const focusFile = `/tmp/codex-focus-lens${i + 1}.txt`
   return (
     `You are a codex review RUNNER. Do not review the code yourself and do not fix anything. ` +
     `Your job is to invoke codex and faithfully transcribe its findings.\n\n` +
     `Step 1 — locate the codex companion script:\n` +
     `  find "$HOME/.claude/plugins" -name codex-companion.mjs 2>/dev/null | head -1\n` +
     `If it prints nothing, return verdict "error", summary "codex plugin not installed", findings [].\n\n` +
-    `Step 2 — write the focus text to ${focusFile} using the Write tool (NOT the shell, NOT echo — ` +
+    `Step 2 — mint a fresh focus file: run\n` +
+    `  mktemp /tmp/codex-focus-lens${i + 1}-XXXXXX\n` +
+    `and use the printed path as <focus-file> in the steps below. Never reuse a fixed or leftover ` +
+    `path — stale focus files from earlier runs poison the review, and concurrent runs would collide. ` +
+    `Then write the focus text to <focus-file> using the Write tool (NOT the shell, NOT echo — ` +
     `so its contents are never interpreted by a shell). Write EXACTLY this text, verbatim, between the markers ` +
     `(do not include the markers themselves):\n` +
     `<<<<FOCUS\n${focusText}\nFOCUS>>>>\n\n` +
-    `Step 3 — run a focused adversarial review (blocks until done; may take several minutes). ` +
+    `Step 3 — run a focused adversarial review (blocks until done; codex passes routinely take 5-20 minutes). ` +
+    `Set the Bash tool's timeout parameter to 540000 — the default 120s cap would SIGTERM codex mid-flight. ` +
+    `Run it in the FOREGROUND — do NOT use run_in_background. ` +
     `Pass the focus via command substitution so its contents reach codex as a single literal argument, ` +
-    `never re-scanned by the shell. Use this EXACT shape, substituting only the companion path you found:\n` +
-    `  node "<companion>" adversarial-review --wait --json --scope ${scope} ${baseFlag}"$(cat ${focusFile})"\n` +
-    `Do NOT inline the focus text into the command. Do NOT add other flags.\n\n` +
+    `never re-scanned by the shell. Use this EXACT shape, substituting only the companion path and <focus-file>:\n` +
+    `  node "<companion>" adversarial-review --wait --json --scope ${scope} ${baseFlag}"$(cat <focus-file>)"\n` +
+    `Do NOT inline the focus text into the command. Do NOT add other flags. ` +
+    `If the command is killed at the timeout (exit 143) with no JSON output, cancel any orphaned review-… ` +
+    `job it left behind, then relaunch the same command ONCE. Only return verdict "error" after a genuine ` +
+    `failure or a second timeout — never merely because codex is slow.\n\n` +
     `Step 4 — the command prints a JSON payload (because of --json) with verdict, summary, and findings ` +
     `(each with file, line_start/line_end, severity, confidence 0-1, recommendation). ` +
     `Transcribe ALL findings into the schema verbatim from that JSON — do not add, drop, merge, or editorialize. ` +
@@ -171,7 +191,7 @@ let lastVerdict = 'unknown'
 let round = 0
 let dry = 0
 
-while (round < maxRounds && dry < 1) {
+while (round < maxRounds && dry < 1 && !blocked.length) {
   round++
   // Build the "already adjudicated" ledger from everything surfaced to the human so far
   // (needs-pick / intent-check / unclear/rejected) and feed it into codex's focus this round
@@ -193,10 +213,13 @@ while (round < maxRounds && dry < 1) {
   )).filter(Boolean)
 
   // A broken/missing codex runtime or a crashed runner must NOT look like a clean review.
-  // Detect error verdicts and dropped (null/thrown) agents, surface as blocking, and stop —
-  // these don't self-heal, so re-reviewing is pointless and silently passing is dangerous.
+  // Detect error verdicts and dropped (null/thrown) agents and surface them as blocking —
+  // but FINISH the round with the healthy lenses first: their findings are already paid for,
+  // and abandoning them mid-round has silently produced fixed:[] next to real findings that
+  // only existed in the journal. The while condition halts the loop once blocked is non-empty.
   const dropped = lenses.length - reviews.length
   const errored = reviews.filter(r => r.verdict === 'error')
+  const healthy = reviews.filter(r => r.verdict !== 'error')
   if (dropped > 0 || errored.length) {
     for (const e of errored) {
       blocked.push({ round, kind: 'review-error', lens: e.summary || 'unknown',
@@ -206,18 +229,17 @@ while (round < maxRounds && dry < 1) {
       blocked.push({ round, kind: 'review-dropped',
         detail: `${dropped} of ${lenses.length} review lens agent(s) returned no result (crashed/timed out). Coverage is incomplete — do not treat as clean.` })
     }
-    log(`Round ${round}: ${errored.length} errored + ${dropped} dropped review(s) — surfacing as BLOCKING, halting the loop.`)
-    break
+    log(`Round ${round}: ${errored.length} errored + ${dropped} dropped review(s) — BLOCKING; finishing the round with ${healthy.length} healthy lens(es), then halting.`)
   }
 
-  lastVerdict = reviews.some(r => r.verdict === 'needs-attention')
+  lastVerdict = healthy.some(r => r.verdict === 'needs-attention')
     ? 'needs-attention'
-    : (reviews.length && reviews.every(r => r.verdict === 'approve') ? 'approve' : 'unknown')
+    : (healthy.length && healthy.every(r => r.verdict === 'approve') ? 'approve' : 'unknown')
 
   // dedup within round, then classify against history
   const roundKeys = new Set()
   const fresh = []
-  for (const r of reviews) {
+  for (const r of healthy) {
     for (const f of (r.findings || [])) {
       const k = findingKey(f)
       if (roundKeys.has(k)) continue
