@@ -8,3 +8,5 @@ description: Manual-invoke only — do NOT auto-trigger. Use after a /build-and-
 Companion to [[build-and-codex-review]] — run it after the user has adjudicated that loop's HITL items.
 
 Build out anything that the user asked you to in response to your questions. After building it out, edit your hand-off: document all decisions and changes made, including all autofixes, all fixes from the user, and all items that were brought up and accepted. If the handoff path isn't in context, ask the user for it.
+
+Then ALWAYS re-run the review loop — do not stop after building and editing the handoff; the re-run is the point of this skill. Invoke the codex-review-loop Workflow exactly as [[build-and-codex-review]] step 4 describes, passing the full UPDATED handoff text as `args.handoff` (reuse the prior run's lenses unless the handoff's concern map changed — then re-derive ≤3), and present the results per its step 5.
