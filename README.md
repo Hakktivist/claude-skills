@@ -2,7 +2,7 @@
 
 A collection of custom [Claude Code](https://claude.com/claude-code) skills.
 
-The three custom skills are **manual-invoke only** — they never auto-trigger. Run them
+The custom skills are **manual-invoke only** — they never auto-trigger. Run them
 with their slash command (e.g. `/scoping-linear-tickets`) or by naming the skill.
 
 ## Custom skills
@@ -11,10 +11,12 @@ with their slash command (e.g. `/scoping-linear-tickets`) or by naming the skill
 | --- | --- |
 | [`scoping-linear-tickets`](skills/scoping-linear-tickets/) | Scopes a pasted Linear ticket into a structured brief — what it achieves, how it fits the epic, localhost before/after, and grill questions or files-to-touch. |
 | [`build-and-codex-review`](skills/build-and-codex-review/) | After a scoping brief is green-lit: builds the change, writes a handoff, derives concern lenses, and runs a Workflow that loops codex adversarial reviews into code-reading fixers until reviews come back clean. |
+| [`continue-review-loop`](skills/continue-review-loop/) | Post-HITL companion to `build-and-codex-review`: once you've answered the loop's needs-pick / intent-check / unclear questions, builds your decisions, updates the handoff, and relaunches the review loop. |
+| [`triage-bug`](skills/triage-bug/) | Runs a bug report to ground: reproduces it locally (live server → shrunk harness → static trace), root-causes it, applies and re-verifies a fix (left uncommitted), and reports back — asking you only when blocked on something only you can do. |
 | [`address-review-comments`](skills/address-review-comments/) | Investigates PR review comments (pasted or pulled via `gh`), scores each by confidence, then fixes, surfaces options with a recommendation, or reports uncertainty. |
 | [`review-buddy`](skills/review-buddy/) | Interactive pair-reviewer: gathers the diff (uncommitted files, open PR) and the ticket, then walks the changed files one at a time on your lead — what each does, whether it matches the ticket's intent, and any gaps. Pairs with `/manual-review`. |
 
-These pair up as a workflow: **scope** a ticket → **build & review** it → **address** the review comments that come back. `review-buddy` sits alongside for a manual, file-by-file pass with a human in the loop.
+These pair up as a workflow: **scope** a ticket → **build & review** it → **address** the review comments that come back. `review-buddy` sits alongside for a manual, file-by-file pass with a human in the loop, and `triage-bug` is the entry point when the ticket is a bug report rather than a feature.
 
 ## Supporting skills
 
