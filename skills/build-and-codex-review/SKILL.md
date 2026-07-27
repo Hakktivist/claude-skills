@@ -27,7 +27,7 @@ HANDOFF_DIR=$(mktemp -d "${TMPDIR:-/tmp}/bcr-handoff.XXXXXX")
 # write the filled-in template to "$HANDOFF_DIR/HANDOFF.md"
 echo "$HANDOFF_DIR/HANDOFF.md"
 ```
-Note the printed path so you can reference it later; pass its full text as `args.handoff` in step 4.
+Note the printed path — it IS the review spec: pass it as `args.handoffPath` in step 4. Never inline the handoff *text* into args: review runners `cat` the file straight into the codex command and fixers Read it themselves, so the text never sits in any agent's context or gets re-typed token-by-token.
 
 ### 3. Derive concern lenses
 From the handoff's concern map, write **≤3 distinct lenses** — one focused review angle each (e.g. `"the auth-token refresh path and its race conditions"`, `"the data migration's backfill correctness"`). More passes ≠ better; 3 is the max for a reason. One concern → one lens.
@@ -36,7 +36,7 @@ From the handoff's concern map, write **≤3 distinct lenses** — one focused r
 Invoke the **Workflow** tool with `scriptPath` set to this skill's `codex-review-loop.workflow.js`, passing `args`:
 ```
 { lenses: [...],            // step 3
-  handoff: "<full handoff text>",
+  handoffPath: "<absolute path to HANDOFF.md from step 2>",  // the PATH, never the text
   scope: "working-tree",    // staged + unstaged + untracked
   base: undefined,          // or a ref for branch review
   maxRounds: 3,
@@ -45,7 +45,7 @@ Invoke the **Workflow** tool with `scriptPath` set to this skill's `codex-review
 ```
 The Workflow runs each lens as a codex adversarial-review, dedups findings, dispatches one code-reading fixer per file (applying [[address-review-comments]]'s two-dimensional matrix), and loops until codex stops raising fresh findings or only HITL items remain. This is an explicit, skill-directed Workflow invocation — that's the opt-in; just call it.
 
-**`lenses` and `handoff` are required.** The script parses stringified-args deliveries itself and throws `lenses/handoff missing` if the review spec still isn't there — it will never fall back to a generic single-lens review. If it throws, relaunch with `args` as a real JSON object; do not hardcode a temp copy of the script.
+**`lenses` and `handoffPath` are required.** The script parses stringified-args deliveries itself and throws `lenses/handoffPath missing` if the review spec still isn't there — it will never fall back to a generic single-lens review. If it throws, relaunch with `args` as a real JSON object; do not hardcode a temp copy of the script. The path must be plain (letters, digits, `._/ -`); it is interpolated into a shell command, so the script rejects anything shell-active.
 
 **Adjudicated items are fed back to codex each round.** HITL items aren't fixed, so the code stays the same and codex would otherwise re-flag them every round — wasting review credits. Once an item is surfaced to the human (needs-pick / intent-check / unclear), the loop injects it into the next round's codex focus as an "already adjudicated — do not re-report" list, so codex stops re-analyzing it. Fixes are *not* suppressed — codex still re-checks that they held.
 
@@ -66,6 +66,7 @@ Then stop. Do not commit or push unless the user says so.
 | Scoping the ticket here | Precondition — the user runs `/scoping-linear-tickets` first |
 | Committing before review | Loop reviews the working tree; leave it uncommitted |
 | Writing `HANDOFF.md` into the repo | It's an untracked file the working-tree review would flag; always `mktemp -d` it outside the repo |
+| Passing handoff text instead of its path | `args.handoffPath` only — inlining the text bloats every runner's context and Write output |
 | Writing >3 lenses to "be thorough" | 3 max; more passes just add noise. One concern → one lens |
 | Handoff written as ground truth | It's the builder's belief; the template says verify against code, and fixers do |
 | Letting the orchestrator (you) review code | You stay lean — codex reviews, fixers read code. You derive lenses and aggregate |

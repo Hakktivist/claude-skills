@@ -10,7 +10,10 @@ export const meta = {
 // ---- args ----------------------------------------------------------------
 // REQUIRED — the run refuses to start without a real review spec:
 // args.lenses:      string[]  concern focuses derived from the handoff (<=3)
-// args.handoff:     string    the handoff text, inlined (context, NOT ground truth)
+// args.handoffPath: string    absolute path to the handoff file (context, NOT ground truth).
+//                             Passed by PATH, not text: runners `cat` it straight into the codex
+//                             command and fixers Read it themselves, so the multi-KB handoff never
+//                             sits in a runner's context and never gets re-typed through Write.
 // Optional knobs (these keep defaults):
 // args.scope:       string    codex --scope (default 'working-tree')
 // args.base:        string?   optional --base ref
@@ -27,11 +30,17 @@ export const meta = {
 // So: parse the string form back, and if the review spec still isn't there, die loudly
 // before any codex spend. A review harness that loses its spec must fail, not improvise.
 const a = typeof args === 'string' ? JSON.parse(args) : args
-if (!a || !Array.isArray(a.lenses) || !a.lenses.length || typeof a.handoff !== 'string' || !a.handoff.length) {
-  throw new Error(`codex-review-loop: lenses/handoff missing (typeof args=${typeof args}) — refusing to run the default-lens fallback`)
+if (!a || !Array.isArray(a.lenses) || !a.lenses.length || typeof a.handoffPath !== 'string' || !a.handoffPath.length) {
+  throw new Error(`codex-review-loop: lenses/handoffPath missing (typeof args=${typeof args}) — refusing to run the default-lens fallback`)
 }
 const lenses = a.lenses.slice(0, 3)
-const handoff = a.handoff
+// handoffPath is interpolated (double-quoted) into the runner's shell command, so allow only
+// plain path characters — anything shell-active is rejected loudly, never interpolated.
+const SAFE_PATH = /^\/[A-Za-z0-9._/ -]+$/
+const handoffPath = a.handoffPath
+if (!SAFE_PATH.test(handoffPath)) {
+  throw new Error(`codex-review-loop: handoffPath "${handoffPath}" contains unsafe characters — refusing to interpolate it into a shell command`)
+}
 // scope goes straight into the shell command, so constrain it to the companion's
 // accepted enum — never trust args. Anything else falls back to working-tree.
 const SCOPES = ['auto', 'working-tree', 'branch']
@@ -123,32 +132,40 @@ function reviewPrompt(lens, i, suppress) {
       `is already made and re-reporting only wastes review budget. Report ONLY issues NOT in this list:\n` +
       suppress.map((s, n) => `${n + 1}. [${s.file}] ${s.title} — ${s.disposition}${s.reason ? `: ${s.reason}` : ''}`).join('\n')
     : ''
+  // The handoff is deliberately NOT inlined here: the runner never needs to read it —
+  // only codex does. It is appended after the focus at the shell via cat, so the runner's
+  // context (and its Write output) stays a few lines no matter how big the handoff is.
   const focusText =
     `FOCUS: ${lens}. ` +
-    `Use the handoff below as CONTEXT only — do NOT trust it as ground truth; verify against the real diff. ` +
-    `Handoff:\n${handoff}` +
-    suppressBlock
+    `Use the handoff appended after this focus as CONTEXT only — do NOT trust it as ground truth; ` +
+    `verify against the real diff.` +
+    suppressBlock +
+    `\n\nHandoff:`
   return (
     `You are a codex review RUNNER. Do not review the code yourself and do not fix anything. ` +
     `Your job is to invoke codex and faithfully transcribe its findings.\n\n` +
-    `Step 1 — locate the codex companion script:\n` +
+    `Step 1 — ONE Bash call containing exactly these three lines:\n` +
     `  find "$HOME/.claude/plugins" -name codex-companion.mjs 2>/dev/null | head -1\n` +
-    `If it prints nothing, return verdict "error", summary "codex plugin not installed", findings [].\n\n` +
-    `Step 2 — mint a fresh focus file: run\n` +
+    `  [ -s "${handoffPath}" ] && echo HANDOFF_OK || echo HANDOFF_MISSING\n` +
     `  mktemp /tmp/codex-focus-lens${i + 1}-XXXXXX\n` +
-    `and use the printed path as <focus-file> in the steps below. Never reuse a fixed or leftover ` +
-    `path — stale focus files from earlier runs poison the review, and concurrent runs would collide. ` +
-    `Then write the focus text to <focus-file> using the Write tool (NOT the shell, NOT echo — ` +
+    `If the first line prints nothing, return verdict "error", summary "codex plugin not installed", findings []. ` +
+    `If it prints HANDOFF_MISSING, return verdict "error", summary "handoff file missing or empty at ${handoffPath}", ` +
+    `findings [] — never run a blind review without the handoff. ` +
+    `Otherwise the mktemp path is your <focus-file>; never reuse a fixed or leftover path — stale focus files ` +
+    `from earlier runs poison the review, and concurrent runs would collide.\n\n` +
+    `Step 2 — write the focus text to <focus-file> using the Write tool (NOT the shell, NOT echo — ` +
     `so its contents are never interpreted by a shell). Write EXACTLY this text, verbatim, between the markers ` +
     `(do not include the markers themselves):\n` +
     `<<<<FOCUS\n${focusText}\nFOCUS>>>>\n\n` +
     `Step 3 — run a focused adversarial review (blocks until done; codex passes routinely take 5-20 minutes). ` +
     `Set the Bash tool's timeout parameter to 540000 — the default 120s cap would SIGTERM codex mid-flight. ` +
     `Run it in the FOREGROUND — do NOT use run_in_background. ` +
-    `Pass the focus via command substitution so its contents reach codex as a single literal argument, ` +
-    `never re-scanned by the shell. Use this EXACT shape, substituting only the companion path and <focus-file>:\n` +
-    `  node "<companion>" adversarial-review --wait --json --scope ${scope} ${baseFlag}"$(cat <focus-file>)"\n` +
-    `Do NOT inline the focus text into the command. Do NOT add other flags. ` +
+    `The command substitution concatenates your focus with the handoff file and passes both to codex as one ` +
+    `literal argument, never re-scanned by the shell. Use this EXACT shape, substituting only the companion ` +
+    `path and <focus-file>:\n` +
+    `  node "<companion>" adversarial-review --wait --json --scope ${scope} ${baseFlag}"$(cat <focus-file> "${handoffPath}")"\n` +
+    `Do NOT inline the focus text into the command. Do NOT read, cat, or paste the handoff yourself — it reaches ` +
+    `codex via the command substitution. Do NOT add other flags. ` +
     `If the command is killed at the timeout (exit 143) with no JSON output, cancel any orphaned review-… ` +
     `job it left behind, then relaunch the same command ONCE. Only return verdict "error" after a genuine ` +
     `failure or a second timeout — never merely because codex is slow.\n\n` +
@@ -159,6 +176,15 @@ function reviewPrompt(lens, i, suppress) {
     `If the command exits non-zero, prints no parseable JSON, or otherwise fails, return verdict "error", ` +
     `summary describing exactly what went wrong (include stderr), and findings [] — do NOT fabricate findings or confidence.`
   )
+}
+
+// Findings as labeled text, not JSON.stringify — models read it at least as reliably,
+// and it drops the brace/quote/indent overhead from every fixer prompt.
+function renderFinding(f, n) {
+  return `${n + 1}. [${f.severity}] ${f.title}\n` +
+    `   ${f.file}:${f.line_start}-${f.line_end} — codex confidence ${f.confidence}\n` +
+    `   claim: ${f.body}\n` +
+    `   recommendation: ${f.recommendation}`
 }
 
 function fixPrompt(file, findings) {
@@ -172,8 +198,8 @@ function fixPrompt(file, findings) {
     `< 90% -> unclear. Never fix on a guess.\n\n` +
     `NON-NEGOTIABLE: You MUST read the actual code in ${file} (plus relevant callers/callees) before scoring. ` +
     `Codex's finding is a CLAIM, not truth. The handoff is CONTEXT, not truth. Verify both against the real code.\n\n` +
-    `Handoff (context only — verify it):\n${handoff}\n\n` +
-    `Codex findings for ${file}:\n${JSON.stringify(findings, null, 2)}\n\n` +
+    `The builder's handoff is at ${handoffPath} — Read it for intent context (context only — verify it).\n\n` +
+    `Codex findings for ${file}:\n${findings.map(renderFinding).join('\n')}\n\n` +
     `For each finding: read code -> score both dimensions -> act. When you fix, make the minimal correct edit ` +
     `with Edit and run cheap affected lint/typecheck if obvious. Do NOT commit. Do NOT touch any file other ` +
     `than ${file}. Return structured output: action per finding, both scores, and a one-line detail (for fixes, ` +
