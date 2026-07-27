@@ -22,6 +22,7 @@ Turn a pasted Linear ticket into a tight scoping brief. The brief answers: what 
 ### 2. Explore the codebase
 
 - Find the surfaces and files the ticket touches.
+- When you delegate the reading to subagents (e.g. Explore agents fanning out over files), launch them with `model: "opus"` — the alias always resolves to the latest Opus.
 - **Verify the ticket's claims.** Tables, services, routes, and "foundation from the blocking ticket" it references may not exist yet, or may be named differently. Check, don't trust.
 
 ### 3. Decide: clear or unclear?

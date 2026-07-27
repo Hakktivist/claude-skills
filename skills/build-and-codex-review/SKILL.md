@@ -16,7 +16,7 @@ The post-green-light pipeline: **build → handoff → codex-review-loop**. You 
 ## Workflow
 
 ### 1. Build
-Implement the green-lit brief. For multi-task plans, use [[subagent-driven-development]]; otherwise build directly with [[test-driven-development]]. Do **not** commit — the loop reviews the working tree.
+Implement the green-lit brief. For multi-task plans, use [[subagent-driven-development]]; otherwise build directly with [[test-driven-development]]. When you dispatch build subagents, launch them with `model: "opus"` — the alias always resolves to the latest Opus. Do **not** commit — the loop reviews the working tree.
 
 ### 2. Write the handoff
 Copy `handoff-template.md` (in this skill's directory) and fill it in for what you just built. The concern map (section 3) is the important part — it's where review lenses come from. The template's first line tells every downstream agent: **this is context, not ground truth — verify against the code.** Keep it honest about soft spots; that's where review pays off.
