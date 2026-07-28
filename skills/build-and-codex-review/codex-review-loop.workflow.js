@@ -134,7 +134,7 @@ function reviewPrompt(lens, i, suppress) {
     : ''
   // The handoff is deliberately NOT inlined here: the runner never needs to read it —
   // only codex does. It is appended after the focus at the shell via cat, so the runner's
-  // context (and its Write output) stays a few lines no matter how big the handoff is.
+  // context stays a few lines no matter how big the handoff is.
   const focusText =
     `FOCUS: ${lens}. ` +
     `Use the handoff appended after this focus as CONTEXT only — do NOT trust it as ground truth; ` +
@@ -143,33 +143,29 @@ function reviewPrompt(lens, i, suppress) {
     `\n\nHandoff:`
   return (
     `You are a codex review RUNNER. Do not review the code yourself and do not fix anything. ` +
-    `Your job is to invoke codex and faithfully transcribe its findings.\n\n` +
-    `Step 1 — ONE Bash call containing exactly these three lines:\n` +
-    `  find "$HOME/.claude/plugins" -name codex-companion.mjs 2>/dev/null | head -1\n` +
-    `  [ -s "${handoffPath}" ] && echo HANDOFF_OK || echo HANDOFF_MISSING\n` +
-    `  mktemp /tmp/codex-focus-lens${i + 1}-XXXXXX\n` +
-    `If the first line prints nothing, return verdict "error", summary "codex plugin not installed", findings []. ` +
-    `If it prints HANDOFF_MISSING, return verdict "error", summary "handoff file missing or empty at ${handoffPath}", ` +
+    `Your job is to invoke codex once and faithfully transcribe its findings. Keep it to TWO steps ` +
+    `total — every extra tool call re-pays your whole context, so no exploratory calls.\n\n` +
+    `Step 1 — ONE Bash call with EXACTLY this script, verbatim. The quoted heredoc keeps the focus text ` +
+    `literal (the shell never interprets it), and the command substitution hands focus+handoff to codex ` +
+    `as one literal argument — so do not "improve" the quoting. Set the Bash timeout parameter to 540000 ` +
+    `(the default 120s cap would SIGTERM codex mid-flight) and run it in the FOREGROUND — do NOT use ` +
+    `run_in_background; codex passes routinely take 5-20 minutes, so a long silent wait is normal, not a hang.\n\n` +
+    `COMPANION=$(find "$HOME/.claude/plugins" -name codex-companion.mjs 2>/dev/null | head -1)\n` +
+    `[ -n "$COMPANION" ] || { echo "BCR_ERROR: codex plugin not installed"; exit 9; }\n` +
+    `[ -s "${handoffPath}" ] || { echo "BCR_ERROR: handoff missing or empty at ${handoffPath}"; exit 9; }\n` +
+    `FOCUS=$(mktemp /tmp/codex-focus-lens${i + 1}-XXXXXX)\n` +
+    `cat > "$FOCUS" <<'BCR_FOCUS_EOF'\n` +
+    `${focusText}\n` +
+    `BCR_FOCUS_EOF\n` +
+    `node "$COMPANION" adversarial-review --wait --json --scope ${scope} ${baseFlag}"$(cat "$FOCUS" "${handoffPath}")"\n\n` +
+    `Do NOT read, cat, or paste the handoff yourself — it reaches codex inside the command substitution. ` +
+    `Do NOT add other flags or extra commands. ` +
+    `If the script prints a BCR_ERROR line, return verdict "error" with that line as the summary and ` +
     `findings [] — never run a blind review without the handoff. ` +
-    `Otherwise the mktemp path is your <focus-file>; never reuse a fixed or leftover path — stale focus files ` +
-    `from earlier runs poison the review, and concurrent runs would collide.\n\n` +
-    `Step 2 — write the focus text to <focus-file> using the Write tool (NOT the shell, NOT echo — ` +
-    `so its contents are never interpreted by a shell). Write EXACTLY this text, verbatim, between the markers ` +
-    `(do not include the markers themselves):\n` +
-    `<<<<FOCUS\n${focusText}\nFOCUS>>>>\n\n` +
-    `Step 3 — run a focused adversarial review (blocks until done; codex passes routinely take 5-20 minutes). ` +
-    `Set the Bash tool's timeout parameter to 540000 — the default 120s cap would SIGTERM codex mid-flight. ` +
-    `Run it in the FOREGROUND — do NOT use run_in_background. ` +
-    `The command substitution concatenates your focus with the handoff file and passes both to codex as one ` +
-    `literal argument, never re-scanned by the shell. Use this EXACT shape, substituting only the companion ` +
-    `path and <focus-file>:\n` +
-    `  node "<companion>" adversarial-review --wait --json --scope ${scope} ${baseFlag}"$(cat <focus-file> "${handoffPath}")"\n` +
-    `Do NOT inline the focus text into the command. Do NOT read, cat, or paste the handoff yourself — it reaches ` +
-    `codex via the command substitution. Do NOT add other flags. ` +
-    `If the command is killed at the timeout (exit 143) with no JSON output, cancel any orphaned review-… ` +
-    `job it left behind, then relaunch the same command ONCE. Only return verdict "error" after a genuine ` +
-    `failure or a second timeout — never merely because codex is slow.\n\n` +
-    `Step 4 — the command prints a JSON payload (because of --json) with verdict, summary, and findings ` +
+    `If it is killed at the timeout (exit 143) with no JSON output, cancel any orphaned review-… job it ` +
+    `left behind, then re-run the SAME script ONCE (it mints a fresh focus file each run). Only return ` +
+    `verdict "error" after a genuine failure or a second timeout — never merely because codex is slow.\n\n` +
+    `Step 2 — the command prints a JSON payload (because of --json) with verdict, summary, and findings ` +
     `(each with file, line_start/line_end, severity, confidence 0-1, recommendation). ` +
     `Transcribe ALL findings into the schema verbatim from that JSON — do not add, drop, merge, or editorialize. ` +
     `If a finding lacks a line number, use 1. ` +
@@ -223,11 +219,15 @@ while (round < maxRounds && dry < 1 && !blocked.length) {
   // (needs-pick / intent-check / unclear/rejected) and feed it into codex's focus this round
   // so it doesn't re-raise the same topics. Fixed items are intentionally NOT here — we still
   // want codex to re-check that fixes held (a re-flag of a fix escalates below).
+  // Collapse ALL whitespace in every field: suppress lines travel inside the runner's quoted
+  // heredoc, so each item must stay a single line (a stray newline could even collide with the
+  // heredoc delimiter). Single-line items also keep the numbered list parseable for codex.
+  const oneLine = (s, cap) => (s || '').replace(/\s+/g, ' ').trim().slice(0, cap)
   const suppress = allHitl.map(h => ({
-    file: (h.file || 'UNKNOWN').trim(),
-    title: (h.title || '(untitled)').trim(),
+    file: oneLine(h.file, 200) || 'UNKNOWN',
+    title: oneLine(h.title, 200) || '(untitled)',
     disposition: h.action || 'deferred',
-    reason: (h.detail || '').replace(/\s+/g, ' ').trim().slice(0, 200),
+    reason: oneLine(h.detail, 200),
   }))
   log(`Round ${round}: ${lenses.length} codex lens review(s) over the ${scope}` +
     (suppress.length ? ` — suppressing ${suppress.length} already-adjudicated item(s)` : ''))
