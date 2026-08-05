@@ -19,10 +19,18 @@ export const meta = {
 // args.base:        string?   optional --base ref
 // args.maxRounds:   number    safety cap (default 3)
 // args.arcSkillPath:string    absolute path to address-review-comments/SKILL.md
+// args.progressDir: string?   absolute path to an empty per-run dir. Each lens points
+//                             CLAUDE_PLUGIN_DATA at "<progressDir>/lens<N>", which relocates the
+//                             codex companion's job state (state.mjs:41) so its live progress log
+//                             lands at a path the MAIN thread can predict and tail with Monitor.
+//                             Without it the review still runs — you just get no live visibility.
 // args.runnerModel: string?   model for the codex review-RUNNER agents (default 'sonnet').
 //                             Runners only invoke codex + transcribe its JSON — no code
-//                             reasoning — so a cheap model is the right fit. Fixers are NOT
-//                             pinned here; they do the real judgment and inherit the session model.
+//                             reasoning — so a cheap model is the right fit.
+// args.fixerModel:  string?   model for the FIXER agents (default 'opus' — the alias always
+//                             resolves to the latest Opus). Fixers do the real claim-accuracy /
+//                             intent judgment and the edits, so they need a strong model; fable is
+//                             not worth the spend here and anything below opus misjudges the matrix.
 //
 // The harness sometimes delivers args as a JSON-encoded STRING; reading .lenses off a
 // string yields undefined, and the old defaults silently degraded the run to a generic
@@ -53,6 +61,18 @@ const arcSkillPath = a.arcSkillPath || '/Users/alannguyen/.claude/skills/address
 // Review runners do zero code reasoning (invoke codex, transcribe its JSON) — pin them to a
 // cheap model by default so a strong session model isn't burned on mechanical transcription.
 const runnerModel = a.runnerModel || 'sonnet'
+// Fixers are the opposite: they read real code, score claim-accuracy vs intent, and make the
+// edits. Pin them to opus rather than inheriting the session model — inheriting means a fable
+// session silently pays fable rates per fixer per round, and anything cheaper than opus
+// misapplies the two-dimensional matrix (the expensive failure is a confident wrong fix).
+const fixerModel = a.fixerModel || 'opus'
+// progressDir is interpolated into the runner's shell command exactly like handoffPath, so it
+// gets the same allow-list. Absent → no isolation and no live progress path (loud warning).
+const progressDir = typeof a.progressDir === 'string' && a.progressDir.length ? a.progressDir : null
+if (progressDir && !SAFE_PATH.test(progressDir)) {
+  throw new Error(`codex-review-loop: progressDir "${progressDir}" contains unsafe characters — refusing to interpolate it into a shell command`)
+}
+if (!progressDir) log('WARNING: no progressDir — codex job logs stay in the shared state dir, so live per-lens progress is NOT tailable this run.')
 // Only allow git-ref-safe characters into the shell command. Anything with shell
 // metacharacters is rejected (and surfaced) rather than silently interpolated.
 const SAFE_REF = /^[A-Za-z0-9._/-]+$/
@@ -141,31 +161,62 @@ function reviewPrompt(lens, i, suppress) {
     `verify against the real diff.` +
     suppressBlock +
     `\n\nHandoff:`
+  // Per-lens working base. Everything about this lens's run (detached job output, exit-code
+  // sentinel, focus file, and the relocated CLAUDE_PLUGIN_DATA state dir) hangs off one stable
+  // prefix, so a LATER Bash call can re-attach to the SAME run without knowing anything new.
+  // progressDir is per-run and unique; the fallback is stable-but-shared, hence the warning above.
+  const lensBase = progressDir ? `${progressDir}/lens${i + 1}` : `\${TMPDIR:-/tmp}/bcr-fallback-lens${i + 1}`
   return (
     `You are a codex review RUNNER. Do not review the code yourself and do not fix anything. ` +
-    `Your job is to invoke codex once and faithfully transcribe its findings. Keep it to TWO steps ` +
-    `total — every extra tool call re-pays your whole context, so no exploratory calls.\n\n` +
-    `Step 1 — ONE Bash call with EXACTLY this script, verbatim. The quoted heredoc keeps the focus text ` +
-    `literal (the shell never interprets it), and the command substitution hands focus+handoff to codex ` +
-    `as one literal argument — so do not "improve" the quoting. Set the Bash timeout parameter to 540000 ` +
-    `(the default 120s cap would SIGTERM codex mid-flight) and run it in the FOREGROUND — do NOT use ` +
-    `run_in_background; codex passes routinely take 5-20 minutes, so a long silent wait is normal, not a hang.\n\n` +
-    `COMPANION=$(find "$HOME/.claude/plugins" -name codex-companion.mjs 2>/dev/null | head -1)\n` +
-    `[ -n "$COMPANION" ] || { echo "BCR_ERROR: codex plugin not installed"; exit 9; }\n` +
-    `[ -s "${handoffPath}" ] || { echo "BCR_ERROR: handoff missing or empty at ${handoffPath}"; exit 9; }\n` +
-    `FOCUS=$(mktemp /tmp/codex-focus-lens${i + 1}-XXXXXX)\n` +
-    `cat > "$FOCUS" <<'BCR_FOCUS_EOF'\n` +
+    `Your job is to invoke codex once and faithfully transcribe its findings. Make NO exploratory ` +
+    `tool calls — every extra call re-pays your whole context.\n\n` +
+    `Step 1 — run EXACTLY this script with Bash, verbatim, in the FOREGROUND with the timeout ` +
+    `parameter set to 540000. Do NOT use run_in_background: you are a schema-bound subagent, so if ` +
+    `you background the work you have nothing to do and the task gets torn down before codex ever ` +
+    `finishes. This script instead DETACHES codex on the first run and then waits for it, so no single ` +
+    `Bash call ever approaches the 10-minute cap. The quoted heredoc keeps the focus text literal (the ` +
+    `shell never interprets it) and the command substitution hands focus+handoff to codex as one ` +
+    `literal argument — so do not "improve" the quoting.\n\n` +
+    `BASE="${lensBase}"\n` +
+    `mkdir -p "$(dirname "$BASE")"\n` +
+    `OUT="$BASE.out"; DONE="$BASE.done"; ERR="$BASE.err"; STARTED="$BASE.started"\n` +
+    `export CLAUDE_PLUGIN_DATA="$BASE.data"\n` +
+    `if [ ! -f "$STARTED" ]; then\n` +
+    `  COMPANION=$(find "$HOME/.claude/plugins" -name codex-companion.mjs 2>/dev/null | head -1)\n` +
+    `  [ -n "$COMPANION" ] || { echo "BCR_ERROR: codex plugin not installed"; exit 9; }\n` +
+    `  [ -s "${handoffPath}" ] || { echo "BCR_ERROR: handoff missing or empty at ${handoffPath}"; exit 9; }\n` +
+    `  mkdir -p "$CLAUDE_PLUGIN_DATA"\n` +
+    `  FOCUS="$BASE.focus"\n` +
+    `  cat > "$FOCUS" <<'BCR_FOCUS_EOF'\n` +
     `${focusText}\n` +
     `BCR_FOCUS_EOF\n` +
-    `node "$COMPANION" adversarial-review --wait --json --scope ${scope} ${baseFlag}"$(cat "$FOCUS" "${handoffPath}")"\n\n` +
+    `  cat > "$BASE.sh" <<BCR_RUN_EOF\n` +
+    `export CLAUDE_PLUGIN_DATA="$CLAUDE_PLUGIN_DATA"\n` +
+    `node "$COMPANION" adversarial-review --wait --json --scope ${scope} ${baseFlag}"\\$(cat "$FOCUS" "${handoffPath}")" > "$OUT" 2> "$ERR"\n` +
+    `echo \\$? > "$DONE"\n` +
+    `BCR_RUN_EOF\n` +
+    `  : > "$STARTED"\n` +
+    `  nohup sh "$BASE.sh" >/dev/null 2>&1 &\n` +
+    `  disown 2>/dev/null\n` +
+    `fi\n` +
+    `i=0\n` +
+    `until [ -f "$DONE" ] || [ $i -ge 250 ]; do sleep 2; i=$((i+1)); done\n` +
+    `if [ -f "$DONE" ]; then RC=$(cat "$DONE"); echo "BCR_EXIT=$RC"; cat "$OUT"; ` +
+    `[ "$RC" = 0 ] || { echo "BCR_STDERR:"; tail -20 "$ERR"; }; else echo "BCR_PENDING"; fi\n\n` +
+    `The first run detaches codex and waits up to ~8 minutes for it. **If the output is ` +
+    `BCR_PENDING, codex is still working — run the EXACT SAME script again.** It will detect the ` +
+    `existing run and re-attach rather than relaunch (that is what the .started marker is for), so ` +
+    `repeating it is cheap and safe. Keep repeating until you get a BCR_EXIT line. Give up only after ` +
+    `6 consecutive BCR_PENDING results (~50 minutes), and return verdict "error" saying codex hung.\n\n` +
     `Do NOT read, cat, or paste the handoff yourself — it reaches codex inside the command substitution. ` +
-    `Do NOT add other flags or extra commands. ` +
+    `Do NOT add other flags, edit the script between runs, or tail the logs — the main thread is already ` +
+    `watching codex's live progress; extra calls here just re-pay your context.\n\n` +
     `If the script prints a BCR_ERROR line, return verdict "error" with that line as the summary and ` +
-    `findings [] — never run a blind review without the handoff. ` +
-    `If it is killed at the timeout (exit 143) with no JSON output, cancel any orphaned review-… job it ` +
-    `left behind, then re-run the SAME script ONCE (it mints a fresh focus file each run). Only return ` +
-    `verdict "error" after a genuine failure or a second timeout — never merely because codex is slow.\n\n` +
-    `Step 2 — the command prints a JSON payload (because of --json) with verdict, summary, and findings ` +
+    `findings [] — never run a blind review without the handoff, and do NOT retry (neither cause is ` +
+    `transient). A BCR_EXIT line with a non-zero code means codex itself failed: return verdict "error" ` +
+    `with the BCR_STDERR text in the summary.\n\n` +
+    `Step 2 — once you have BCR_EXIT=0, everything printed after it is the JSON ` +
+    `payload (because of --json) with verdict, summary, and findings ` +
     `(each with file, line_start/line_end, severity, confidence 0-1, recommendation). ` +
     `Transcribe ALL findings into the schema verbatim from that JSON — do not add, drop, merge, or editorialize. ` +
     `If a finding lacks a line number, use 1. ` +
@@ -298,7 +349,7 @@ while (round < maxRounds && dry < 1 && !blocked.length) {
 
   const fixResults = (await parallel(
     groups.map((g) => () =>
-      agent(fixPrompt(g.file, g.findings), { label: `fix:${g.file}`, phase: 'Fix', schema: FIX_SCHEMA })
+      agent(fixPrompt(g.file, g.findings), { label: `fix:${g.file}`, phase: 'Fix', schema: FIX_SCHEMA, model: fixerModel })
     )
   )).filter(Boolean)
 
