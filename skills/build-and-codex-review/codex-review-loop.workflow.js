@@ -139,7 +139,7 @@ function findingKey(f) {
   return `${(f.file || '').trim()}:${f.line_start || 0}:${(f.title || '').trim().toLowerCase()}`
 }
 
-function reviewPrompt(lens, i, suppress) {
+function reviewPrompt(lens, i, suppress, round) {
   // Everything already surfaced to the human is fed back to codex so it stops
   // re-analyzing and re-reporting the same topics every round. This is semantic
   // (codex reads the descriptions), so it survives title/line drift that the
@@ -161,11 +161,17 @@ function reviewPrompt(lens, i, suppress) {
     `verify against the real diff.` +
     suppressBlock +
     `\n\nHandoff:`
-  // Per-lens working base. Everything about this lens's run (detached job output, exit-code
-  // sentinel, focus file, and the relocated CLAUDE_PLUGIN_DATA state dir) hangs off one stable
-  // prefix, so a LATER Bash call can re-attach to the SAME run without knowing anything new.
+  // Per-lens-per-ROUND working base. Everything about this lens's run (detached job output,
+  // exit-code sentinel, focus file, and the relocated CLAUDE_PLUGIN_DATA state dir) hangs off one
+  // stable prefix, so a LATER Bash call can re-attach to the SAME run without knowing anything new.
+  // The round MUST be in the path: the re-attach guard is `.started`/`.done` on this prefix, so a
+  // prefix shared across rounds makes round 2+ short-circuit to round 1's cached `.out` without
+  // ever invoking codex — a replayed review that both fakes the confirming round and re-flags every
+  // item auto-fixed in round 1, escalating each to HITL as "the fix did not satisfy codex".
   // progressDir is per-run and unique; the fallback is stable-but-shared, hence the warning above.
-  const lensBase = progressDir ? `${progressDir}/lens${i + 1}` : `\${TMPDIR:-/tmp}/bcr-fallback-lens${i + 1}`
+  const lensBase = progressDir
+    ? `${progressDir}/lens${i + 1}-r${round}`
+    : `\${TMPDIR:-/tmp}/bcr-fallback-lens${i + 1}-r${round}`
   return (
     `You are a codex review RUNNER. Do not review the code yourself and do not fix anything. ` +
     `Your job is to invoke codex once and faithfully transcribe its findings. Make NO exploratory ` +
@@ -194,6 +200,28 @@ function reviewPrompt(lens, i, suppress) {
     `export CLAUDE_PLUGIN_DATA="$CLAUDE_PLUGIN_DATA"\n` +
     `node "$COMPANION" adversarial-review --wait --json --scope ${scope} ${baseFlag}"\\$(cat "$FOCUS" "${handoffPath}")" > "$OUT" 2> "$ERR"\n` +
     `echo \\$? > "$DONE"\n` +
+    // Reap this lens's codex broker. Because we point CLAUDE_PLUGIN_DATA at a private per-lens
+    // dir (for the tailable job log), the companion also registers its broker there — and the
+    // plugin's only teardown, the SessionEnd hook, looks for broker.json under the SESSION's
+    // CLAUDE_PLUGIN_DATA. It never sees ours. The broker is spawned detached+unref'd with no idle
+    // timeout, so without this every lens of every run leaks a broker + `codex app-server` +
+    // `codex-code-mode-host` that survive until the machine reboots. This runs AFTER $DONE is
+    // written, so the waiting runner is already free — the reap costs it nothing.
+    `for bj in "\\$CLAUDE_PLUGIN_DATA"/state/*/broker.json; do\n` +
+    `  [ -f "\\$bj" ] || continue\n` +
+    `  BPID=\\$(grep -o '"pid"[^0-9]*[0-9][0-9]*' "\\$bj" | grep -o '[0-9][0-9]*\\$')\n` +
+    `  [ -n "\\$BPID" ] || continue\n` +
+    // Snapshot the tree BEFORE killing: once the broker dies its children reparent to init and
+    // pgrep -P can no longer find them. Two levels is the real shape (broker -> app-server -> host).
+    `  TREE="\\$BPID"\n` +
+    `  for k in \\$(pgrep -P "\\$BPID" 2>/dev/null); do\n` +
+    `    TREE="\\$TREE \\$k"\n` +
+    `    for g in \\$(pgrep -P "\\$k" 2>/dev/null); do TREE="\\$TREE \\$g"; done\n` +
+    `  done\n` +
+    `  kill -TERM \\$TREE 2>/dev/null\n` +
+    `  sleep 3\n` +
+    `  kill -KILL \\$TREE 2>/dev/null\n` +
+    `done\n` +
     `BCR_RUN_EOF\n` +
     `  : > "$STARTED"\n` +
     `  nohup sh "$BASE.sh" >/dev/null 2>&1 &\n` +
@@ -285,7 +313,7 @@ while (round < maxRounds && dry < 1 && !blocked.length) {
 
   const reviews = (await parallel(
     lenses.map((lens, i) => () =>
-      agent(reviewPrompt(lens, i, suppress), { label: `review:lens${i + 1}`, phase: 'Review', schema: FINDINGS_SCHEMA, model: runnerModel })
+      agent(reviewPrompt(lens, i, suppress, round), { label: `review:lens${i + 1}`, phase: 'Review', schema: FINDINGS_SCHEMA, model: runnerModel })
     )
   )).filter(Boolean)
 

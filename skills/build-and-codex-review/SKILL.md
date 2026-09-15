@@ -36,14 +36,14 @@ From the handoff's concern map, write **≤3 distinct lenses** — one focused r
 
 ### 3.5 Arm the progress watch
 
-Codex reviews run 5–20+ minutes and print nothing until they finish (`--json` suppresses the companion's live stderr trace). Without this step the user stares at a silent workflow. Each lens redirects `CLAUDE_PLUGIN_DATA` to `$PROGRESS_DIR/lens<N>`, which relocates the companion's job log somewhere you can predict — so arm **one** Monitor over the whole dir *before* invoking the Workflow, substituting the real `PROGRESS_DIR`:
+Codex reviews run 5–20+ minutes and print nothing until they finish (`--json` suppresses the companion's live stderr trace). Without this step the user stares at a silent workflow. Each lens redirects `CLAUDE_PLUGIN_DATA` to `$PROGRESS_DIR/lens<N>-r<round>.data`, which relocates the companion's job log somewhere you can predict — so arm **one** Monitor over the whole dir *before* invoking the Workflow, substituting the real `PROGRESS_DIR`:
 
 ```sh
 PD="<PROGRESS_DIR>"
 while true; do
   for f in "$PD"/lens*.data/state/*/jobs/review-*.log; do
     [ -f "$f" ] || continue
-    lens=$(printf '%s\n' "$f" | sed -n 's|.*/\(lens[0-9]*\)\.data/state/.*|\1|p')
+    lens=$(printf '%s\n' "$f" | sed -n 's|.*/\(lens[^/]*\)\.data/state/.*|\1|p')
     marker="$PD/.seen-$lens"
     prev=$(cat "$marker" 2>/dev/null || echo 0)
     cur=$(wc -l < "$f" | tr -d ' ')
@@ -60,6 +60,8 @@ done
 ```
 
 Use `persistent: true` and a description like `codex review progress`. It emits roughly 4–8 lines per lens per review — the `»` lines are codex narrating its current hypothesis — and stays silent when nothing has changed. Stop it with TaskStop once the Workflow returns.
+
+The label captured by that `sed` is the whole lens-and-round tag (`lens2-r1`), which is also what keys the `.seen-` markers — so each round gets its own marker and line count, and the output tells you which round you are watching. Don't narrow the capture to `lens[0-9]*`: it silently matches nothing against a round-suffixed dir, which collapses every lens onto one shared marker and prints empty `[]` labels.
 
 The filter deliberately covers `Turn failed` / error / cancelled as well as the happy path: a monitor that only greps for progress goes silent on a crash, and silence is indistinguishable from "still thinking."
 
@@ -86,7 +88,11 @@ The Workflow runs each lens as a codex adversarial-review, dedups findings, disp
 
 **Review runners detach codex, then re-attach.** A foreground Bash call is capped at 10 minutes; codex adversarial reviews routinely exceed that, and the cap SIGTERMs codex mid-flight — which reads as a review failure and blocks the whole loop. `run_in_background` does **not** solve this: a schema-bound subagent that backgrounds its work has nothing left to do, so the task is torn down before codex ever finishes (the symptom is a 0-byte output file and "did not complete within the available turns").
 
-So the runner's script `nohup`s codex on first run, writing its stdout, stderr, and exit code to files under a stable per-lens prefix, then waits ~8 minutes in the foreground. If codex hasn't finished it prints `BCR_PENDING` and the runner re-runs the **identical** script — a `.started` marker makes it re-attach to the live run instead of relaunching. Each call stays well under the cap, and a 20-minute review costs about 3 model requests instead of 2. Detached processes provably survive across Bash calls, which is what makes the re-attach work.
+So the runner's script `nohup`s codex on first run, writing its stdout, stderr, and exit code to files under a stable per-lens-per-round prefix (`lens<N>-r<round>`), then waits ~8 minutes in the foreground. If codex hasn't finished it prints `BCR_PENDING` and the runner re-runs the **identical** script — a `.started` marker makes it re-attach to the live run instead of relaunching. Each call stays well under the cap, and a 20-minute review costs about 3 model requests instead of 2. Detached processes provably survive across Bash calls, which is what makes the re-attach work.
+
+**The round belongs in that prefix.** `.started`/`.done` are what make the re-attach cheap, and they are exactly what makes a round-invariant prefix dangerous: round 2 finds round 1's sentinels, skips the launch, and re-prints round 1's cached `.out` without ever invoking codex. That replay both fakes the confirming round and re-flags everything auto-fixed in round 1, escalating each to HITL as "the fix did not satisfy codex."
+
+**Each lens reaps its own codex broker.** Redirecting `CLAUDE_PLUGIN_DATA` buys the tailable job log, but it also relocates the companion's broker registry (`lib/broker-lifecycle.mjs` keys `broker.json` off `$CLAUDE_PLUGIN_DATA/state`). The plugin's only teardown is its `SessionEnd` hook, which looks under the *session's* `CLAUDE_PLUGIN_DATA` and so never sees a lens's broker — and brokers are spawned detached with no idle timeout. So the detached script kills its broker tree (broker → `codex app-server` → `codex-code-mode-host`) after writing `.done`. Without it, every lens of every run leaks three processes that live until reboot.
 
 ### 5. Present results
 When the Workflow returns, **TaskStop the progress Monitor from step 3.5** (it is persistent and will otherwise run until the session ends), then relay its `note`, then:
@@ -114,3 +120,4 @@ Then stop. Do not commit or push unless the user says so.
 | Skipping the step 3.5 Monitor | The user gets a silent 20-minute workflow and can't tell slow from hung |
 | Leaving the Monitor armed after the run | It's `persistent: true` — TaskStop it in step 5 |
 | Reusing one `PROGRESS_DIR` across runs | Stale `.seen-lens*` markers suppress the new run's early progress; `mktemp -d` a fresh one each time |
+| Dropping the round from the lens prefix | Round 2+ re-attaches to round 1's `.done` and replays its findings without running codex — a fake clean round that also escalates every auto-fix to HITL |
