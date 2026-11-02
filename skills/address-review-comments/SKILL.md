@@ -82,7 +82,7 @@ Keep it scannable. No essays.
 
 ## After fixing
 
-- Run `pnpm exec eslint --fix` + `pnpm exec prettier --write` on edited files, then `pnpm run typecheck:affected`. Fix errors before reporting done.
+- Run `pnpm exec eslint --fix` + `pnpm exec prettier --write` on edited files, then `pnpm run typecheck:affected`. Fix errors before reporting done. **Typecheck is main-thread only:** if you are a subagent or a review-loop fixer applying this method, stop after eslint/prettier and never run typecheck in any form — the orchestrator runs it once after all fixers finish (in Paraform a hook hard-denies it, because it reinstalls dependencies and regenerates the Prisma client under the running app).
 - Do **not** auto-reply on GitHub or push. The user reviews the diff first. If they tell you to reply, use the inline thread reply (`gh api repos/{owner}/{repo}/pulls/{pr}/comments/{id}/replies`), not a top-level PR comment.
 - Do **not** commit unless explicitly told to.
 
