@@ -19,6 +19,32 @@ with their slash command (e.g. `/scoping-linear-tickets`) or by naming the skill
 
 These pair up as a workflow: **scope** a ticket → **build & review** it → **address** the review comments that come back. `review-buddy` sits alongside for a manual, file-by-file pass with a human in the loop, and `triage-bug` is the entry point when the ticket is a bug report rather than a feature.
 
+From the second run of a review loop, an **observer** reads every run's findings and flags when they look like one bug class, such as fixes that keep producing the next finding, or several decisions that may be one decision. It reports a counted confidence, the smallest change that would remove the class, and that change's trade-offs. It's advisory: you adopt it, take a smaller fix, or accept the class. Both the Claude and Codex loops have it.
+
+## Codex-native skills
+
+These two run **inside Codex**, not Claude Code. They are the mirror image of
+`build-and-codex-review`: there, Claude builds and Codex reviews; here, Codex builds and then spawns
+**its own** reviewer and fixer subagents (`spawn_agent` / `wait_agent`) and loops them itself. Same
+contract as the Claude-side pair — handoff-as-context, ≤3 concern lenses, one fixer per file, the
+claim-accuracy × intent-match matrix, a suppression ledger across rounds, and every uncertain item
+stopping for you.
+
+| Skill | What it does |
+| --- | --- |
+| [`codex-build-and-review`](skills/codex-build-and-review/) | Codex builds the green-lit change, writes a handoff outside the repo, derives ≤3 concern lenses, then loops: spawn one adversarial reviewer subagent per lens → route findings by file → one code-reading fixer subagent per file → repeat until a round comes back with no fresh findings. |
+| [`codex-continue-review-loop`](skills/codex-continue-review-loop/) | Post-decision companion: builds what you decided on the open items, records each as *built* (still reviewable) or *accepted* (suppressed), updates the handoff, and re-runs the loop. |
+
+The loop's bookkeeping — parsing subagent output, dedup across rounds, suppressing adjudicated
+items, escalating a finding that reappears after an auto-fix — lives in
+[`review-loop.sh`](skills/codex-build-and-review/review-loop.sh) (POSIX sh + awk, no deps), so it
+can't drift the way a long agent turn's memory does. Codex keeps the judgment: what to build, which
+lenses, when to stop.
+
+They need Codex's multi-agent tools. If `spawn_agent` isn't in the session, run
+`codex features enable multi_agent` and restart — the skill stops rather than falling back to
+reviewing its own work.
+
 ## Supporting skills
 
 The rest of the repo vendors the [superpowers](https://github.com/obra/superpowers) skill set
@@ -46,8 +72,9 @@ general-purpose helpers. Excludes `daily-update` and `find-skills`.
 
 ## Install
 
-Skills live in `~/.claude/skills/`. Clone this repo and symlink each skill (so
-`git pull` keeps them current):
+Claude skills live in `~/.claude/skills/`; the `codex-*` skills go to `$CODEX_HOME/skills`
+(`~/.codex/skills`) instead, since Codex is what runs them. `install.sh` sorts them out. Clone this
+repo and symlink each skill (so `git pull` keeps them current):
 
 ```sh
 git clone https://github.com/Hakktivist/claude-skills.git

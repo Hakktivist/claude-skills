@@ -65,12 +65,20 @@ The label captured by that `sed` is the whole lens-and-round tag (`lens2-r1`), w
 
 The filter deliberately covers `Turn failed` / error / cancelled as well as the happy path: a monitor that only greps for progress goes silent on a crash, and silence is indistinguishable from "still thinking."
 
+### 3.6 Snapshot the run
+Record the tree this run is about to review, and capture the run number it prints:
+```sh
+sh "<this skill's directory>/observer-ledger.sh" snapshot "$HANDOFF_DIR"
+```
+Pass that number as `args.runNumber` in step 4. It hashes the working tree through a throwaway index, so your real index, HEAD, refs, and stash are untouched. The tree is uncommitted, so without this nothing records what changed between runs.
+
 ### 4. Run the loop (Workflow)
 Invoke the **Workflow** tool with `scriptPath` set to this skill's `codex-review-loop.workflow.js`, passing `args`:
 ```
 { lenses: [...],            // step 3
   handoffPath: "<absolute path to HANDOFF.md from step 2>",  // the PATH, never the text
   progressDir: "<PROGRESS_DIR from step 2>",                 // what step 3.5 is watching
+  runNumber: <from step 3.6>,  // without it the run is neither recorded nor observed
   scope: "working-tree",    // staged + unstaged + untracked
   base: undefined,          // or a ref for branch review
   maxRounds: 3,
@@ -84,6 +92,10 @@ The Workflow runs each lens as a codex adversarial-review, dedups findings, disp
 
 **Adjudicated items are fed back to codex each round.** HITL items aren't fixed, so the code stays the same and codex would otherwise re-flag them every round — wasting review credits. Once an item is surfaced to the human (needs-pick / intent-check / unclear), the loop injects it into the next round's codex focus as an "already adjudicated — do not re-report" list, so codex stops re-analyzing it. Fixes are *not* suppressed — codex still re-checks that they held.
 
+**From run 2, an observer looks across runs.** Nobody else can: reviewers start cold, each fixer sees one file, and you stay out of the code. Finding keys are exact, and related bugs share almost no wording, so the loop can't notice a repeating class on its own. A cheap agent writes each run's findings to `observer/ledger/` beside the handoff, and from run 2 a cold opus agent reads them all, following `observer-brief.md`. It only runs when that run had findings and no lens was blocked. It never reaches the fixers and can't fail the review.
+
+**Confidence is counted, not stated.** The script derives it from what the observer returns. A class needs 2+ distinct bugs across 2+ runs to be shown at all. **High** also needs 3+ bugs, a sibling confirmed at a `file:line`, a change that eliminates most members, and 2+ lenses, because one lens can manufacture a pattern out of its own theme. Everything else shown is **medium**. Expect some false positives.
+
 **Both agent tiers are pinned; neither inherits the session model.** Review runners use `runnerModel` (default `sonnet`) — they do no code reasoning, just invoke codex and transcribe its JSON, so a strong model is pure waste. Fixers use `fixerModel` (default `opus`, an alias that always resolves to the latest Opus) — they read real code, score claim-accuracy against intent, and make the edits, so they need the judgment. Pinning rather than inheriting matters in both directions: inheriting meant a fable session silently paid fable rates for every fixer on every round, and anything below opus misapplies the two-dimensional matrix — where the expensive failure mode is a confident wrong fix, not a missed one.
 
 **Review runners detach codex, then re-attach.** A foreground Bash call is capped at 10 minutes; codex adversarial reviews routinely exceed that, and the cap SIGTERMs codex mid-flight — which reads as a review failure and blocks the whole loop. `run_in_background` does **not** solve this: a schema-bound subagent that backgrounds its work has nothing left to do, so the task is torn down before codex ever finishes (the symptom is a 0-byte output file and "did not complete within the available turns").
@@ -95,10 +107,17 @@ So the runner's script `nohup`s codex on first run, writing its stdout, stderr, 
 **Each lens reaps its own codex broker.** Redirecting `CLAUDE_PLUGIN_DATA` buys the tailable job log, but it also relocates the companion's broker registry (`lib/broker-lifecycle.mjs` keys `broker.json` off `$CLAUDE_PLUGIN_DATA/state`). The plugin's only teardown is its `SessionEnd` hook, which looks under the *session's* `CLAUDE_PLUGIN_DATA` and so never sees a lens's broker — and brokers are spawned detached with no idle timeout. So the detached script kills its broker tree (broker → `codex app-server` → `codex-code-mode-host`) after writing `.done`. Without it, every lens of every run leaks three processes that live until reboot.
 
 ### 5. Present results
-When the Workflow returns, **TaskStop the progress Monitor from step 3.5** (it is persistent and will otherwise run until the session ends), then relay its `note`, then:
+When the Workflow returns, **TaskStop the progress Monitor from step 3.5** (it is persistent and will otherwise run until the session ends).
+
+**If anything was auto-fixed, typecheck once yourself, now.** Fixers are forbidden from typechecking: they run in parallel against a tree other fixers are mid-edit on, and in Paraform `typecheck:auto` reinstalls dependencies and regenerates the Prisma client underneath the running dev app. In Paraform a `PreToolUse` hook (`~/.claude/hooks/block-paraform-subagent-typecheck.sh`) hard-denies typecheck from any subagent, so this main-thread run is the only one that happens. Never delegate it to a subagent. Report failures alongside the results — do not silently re-enter the loop to fix them.
+
+Then relay the Workflow's `note`, then:
 - **Blocked** (`blocked[]`) — surface FIRST and loudly. These are review-runner failures (codex errored or an agent crashed), so the review did **not** actually run that round — the result is NOT a clean bill of health. Tell the user what failed and that coverage is incomplete; do not present the run as passing.
+- **Possible shared cause** (`observer.classes[]`) — one short block each, framed as an alert: these N decisions may be one problem. Give the `summary`, `confidence`, `change` labelled **unverified**, `newRisk`, the `recommendation`, and `observer.reportPath`. Ask the user to adopt it, take a smaller fix, or accept the class. Leave the report unread unless they ask: it is the context you are staying out of.
 - **Auto-fixed** (`fixed[]`) — one line each: `file — what changed`. Tell the user to review the diff.
-- **Needs your decision** (`hitl[]`) — surface each per [[address-review-comments]]'s output format: needs-pick (options + your rec), intent-check (codex is right but maybe intentional — confirm/override), or unclear (what couldn't be verified). Do **not** auto-fix these.
+- **Needs your decision** (`hitl[]`) — surface each per [[address-review-comments]]'s output format: needs-pick (options + your rec), intent-check (codex is right but maybe intentional — confirm/override), or unclear (what couldn't be verified). List items with a `classId` under their class, because the class decision may settle them. Do **not** auto-fix these.
+
+If `observer.status` is `failed` or `ledger-failed`, say so in one line. A skipped observer is not a clean result either way, so never describe one as "no shared cause found".
 
 Then stop. Do not commit or push unless the user says so.
 
@@ -120,4 +139,9 @@ Then stop. Do not commit or push unless the user says so.
 | Skipping the step 3.5 Monitor | The user gets a silent 20-minute workflow and can't tell slow from hung |
 | Leaving the Monitor armed after the run | It's `persistent: true` — TaskStop it in step 5 |
 | Reusing one `PROGRESS_DIR` across runs | Stale `.seen-lens*` markers suppress the new run's early progress; `mktemp -d` a fresh one each time |
+| Letting fixers (or any subagent) typecheck | Parallel typechecks on a half-edited tree are noise, and in Paraform they break the running app. Main thread typechecks once in step 5 |
 | Dropping the round from the lens prefix | Round 2+ re-attaches to round 1's `.done` and replays its findings without running codex — a fake clean round that also escalates every auto-fix to HITL |
+| Skipping the step 3.6 snapshot | No `runNumber` means the run is never recorded, so later observers lose it. The review still runs and its `note` says the observer was off |
+| Building an observer class's change without asking | It is an unverified alert. The user adopts it, takes a smaller fix, or accepts the class |
+| Reading the observer report to summarise it | `observer.classes[]` already has what the user needs. The report is for them, or for when they ask |
+| Presenting a class's change as the fix | In testing it found the right bugs far more often than the right fix, so label it unverified |

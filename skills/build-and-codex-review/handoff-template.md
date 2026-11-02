@@ -22,6 +22,7 @@ Order by risk. Keep to ≤3 — more passes ≠ better, just noisier.
 ## 4. Deliberate decisions (pre-empt false positives)
 Things a reviewer will likely flag that were on purpose. For each: what + why.
 - <decision> — intentional because <reason>.
+- Accepted bug class: <what must always be true>. Do not report further instances, because <reason>.
 
 ## 5. Known soft spots
 Where I'm genuinely unsure and *want* scrutiny. Be honest — this is where review pays off.

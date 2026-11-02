@@ -4,6 +4,7 @@ export const meta = {
   phases: [
     { title: 'Review', detail: 'one codex adversarial-review pass per concern lens' },
     { title: 'Fix', detail: 'one fixer per file, applying the address-review-comments matrix after reading the code' },
+    { title: 'Observe', detail: 'record this run, then from run 2 look for one bug class behind findings across runs' },
   ],
 }
 
@@ -31,6 +32,11 @@ export const meta = {
 //                             resolves to the latest Opus). Fixers do the real claim-accuracy /
 //                             intent judgment and the edits, so they need a strong model; fable is
 //                             not worth the spend here and anything below opus misjudges the matrix.
+// args.runNumber:   number?   this run's number, printed by `observer-ledger.sh snapshot`. Without
+//                             it the review still runs, but this run is neither recorded nor observed.
+// args.observerModel:string?  model for the OBSERVER agent (default 'opus'). It reasons across every
+//                             run and reads code, and a wrong class costs a human decision.
+// args.skillDir:    string?   absolute path to this skill, for observer-brief.md and observer-ledger.sh.
 //
 // The harness sometimes delivers args as a JSON-encoded STRING; reading .lenses off a
 // string yields undefined, and the old defaults silently degraded the run to a generic
@@ -66,6 +72,19 @@ const runnerModel = a.runnerModel || 'sonnet'
 // session silently pays fable rates per fixer per round, and anything cheaper than opus
 // misapplies the two-dimensional matrix (the expensive failure is a confident wrong fix).
 const fixerModel = a.fixerModel || 'opus'
+const observerModel = a.observerModel || 'opus'
+const skillDir = a.skillDir || '/Users/alannguyen/.claude/skills/build-and-codex-review'
+if (!SAFE_PATH.test(skillDir)) {
+  throw new Error(`codex-review-loop: skillDir "${skillDir}" contains unsafe characters — refusing to interpret it in an agent's shell command`)
+}
+// The loop dir holds the handoff, so it stays put across continues while progressDir is fresh each
+// run. That makes it the one place a later run can find what the earlier ones raised.
+const loopDir = handoffPath.replace(/\/[^/]*$/, '')
+const observerDir = `${loopDir}/observer`
+const ledgerDir = `${observerDir}/ledger`
+const runNumber = /^[1-9][0-9]*$/.test(String(a.runNumber ?? '')) ? Number(a.runNumber) : null
+const OBSERVER_FROM_RUN = 2
+if (!runNumber) log('WARNING: no runNumber — this run will not be recorded or observed. Run `observer-ledger.sh snapshot` first.')
 // progressDir is interpolated into the runner's shell command exactly like handoffPath, so it
 // gets the same allow-list. Absent → no isolation and no live progress path (loud warning).
 const progressDir = typeof a.progressDir === 'string' && a.progressDir.length ? a.progressDir : null
@@ -134,10 +153,55 @@ const FIX_SCHEMA = {
   },
 }
 
+const OBSERVE_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['classes'],
+  properties: {
+    classes: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['summary', 'invariant', 'members', 'lensCount', 'rung', 'change', 'eliminated', 'siblings', 'newRisk', 'landedInLoopCode', 'recommendation'],
+        properties: {
+          summary: { type: 'string' },
+          invariant: { type: 'string' },
+          members: { type: 'array', items: { type: 'string' } },
+          lensCount: { type: 'integer' },
+          rung: { type: 'string', enum: ['chokepoint', 'structural', 'inherent'] },
+          change: { type: 'string' },
+          eliminated: { type: 'array', items: { type: 'string' } },
+          siblings: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['claim', 'verdict', 'evidence'],
+              properties: {
+                claim: { type: 'string' },
+                verdict: { type: 'string', enum: ['confirmed', 'refuted', 'unchecked'] },
+                evidence: { type: 'string' },
+              },
+            },
+          },
+          newRisk: { type: 'string' },
+          landedInLoopCode: { type: 'array', items: { type: 'string' } },
+          recommendation: { type: 'string', enum: ['adopt', 'smaller-fix', 'accept'] },
+        },
+      },
+    },
+  },
+}
+
 // ---- helpers -------------------------------------------------------------
 function findingKey(f) {
   return `${(f.file || '').trim()}:${f.line_start || 0}:${(f.title || '').trim().toLowerCase()}`
 }
+
+// Collapse ALL whitespace: suppress lines and ledger entries travel inside quoted heredocs, so each
+// field must stay on one line (a stray newline could even collide with the heredoc delimiter).
+const oneLine = (s, cap) => (s || '').replace(/\s+/g, ' ').trim().slice(0, cap)
 
 function reviewPrompt(lens, i, suppress, round) {
   // Everything already surfaced to the human is fed back to codex so it stops
@@ -158,7 +222,8 @@ function reviewPrompt(lens, i, suppress, round) {
   const focusText =
     `FOCUS: ${lens}. ` +
     `Use the handoff appended after this focus as CONTEXT only — do NOT trust it as ground truth; ` +
-    `verify against the real diff.` +
+    `verify against the real diff. Your sandbox is read-only: do NOT run typecheck, tests, installs, or ` +
+    `codegen — they cannot work here and only burn turns. Reason from the code.` +
     suppressBlock +
     `\n\nHandoff:`
   // Per-lens-per-ROUND working base. Everything about this lens's run (detached job output,
@@ -275,11 +340,110 @@ function fixPrompt(file, findings) {
     `Codex's finding is a CLAIM, not truth. The handoff is CONTEXT, not truth. Verify both against the real code.\n\n` +
     `The builder's handoff is at ${handoffPath} — Read it for intent context (context only — verify it).\n\n` +
     `Codex findings for ${file}:\n${findings.map(renderFinding).join('\n')}\n\n` +
+    `Copy each finding's title into your result verbatim, prefixes included: it is how your result is ` +
+    `matched back to the finding.\n\n` +
     `For each finding: read code -> score both dimensions -> act. When you fix, make the minimal correct edit ` +
-    `with Edit and run cheap affected lint/typecheck if obvious. Do NOT commit. Do NOT touch any file other ` +
+    `with Edit; you may run eslint/prettier on ${file} only. Do NOT run typecheck in any form (pnpm typecheck*, ` +
+    `tsc, scripts/typecheck-*), and do NOT run install or codegen commands (pnpm install, prisma generate): ` +
+    `fixers run in parallel against a tree other fixers are mid-edit on, and in some repos typecheck ` +
+    `reinstalls dependencies and regenerates clients underneath the running dev app. The orchestrator ` +
+    `typechecks once after the loop. Do NOT commit. Do NOT touch any file other ` +
     `than ${file}. Return structured output: action per finding, both scores, and a one-line detail (for fixes, ` +
     `what changed; for HITL, what the human must decide).`
   )
+}
+
+function renderLedgerEntry(r) {
+  const disposition = r.disposition ? `${r.disposition} — ${oneLine(r.dispositionDetail, 400)}` : 'not recorded'
+  return [
+    `### ${r.id} [${oneLine(r.severity, 20)}] (lens${r.lens}, round ${r.round}) ${oneLine(r.title, 200)}`,
+    `${oneLine(r.file, 200) || 'UNKNOWN'}:${r.line_start || 1}`,
+    `Claim: ${oneLine(r.body, 700)}`,
+    `Disposition: ${disposition}`,
+    '',
+  ].join('\n')
+}
+
+// The workflow cannot touch the filesystem, so a cheap agent writes the ledger. `cat >` overwrites,
+// so a resumed workflow rewrites its own run rather than appending a second copy. Every line starts
+// with a fixed prefix or is a collapsed field, so nothing can equal the heredoc delimiter alone.
+function scribePrompt(entries) {
+  return (
+    `You are a LEDGER SCRIBE. Do not analyse anything and do not read any files. Run EXACTLY this ` +
+    `script with Bash, verbatim, then reply with the last line it prints and nothing else. The quoted ` +
+    `heredoc keeps the text literal, so do not "improve" the quoting.\n\n` +
+    `mkdir -p "${ledgerDir}"\n` +
+    `cat > "${ledgerDir}/run-${runNumber}.md" <<'BCR_LEDGER_EOF'\n` +
+    `## Run ${runNumber}\n\n${entries}\n` +
+    `BCR_LEDGER_EOF\n` +
+    `echo BCR_LEDGER_OK`
+  )
+}
+
+function observerPrompt(reportPath) {
+  return (
+    `Read ${skillDir}/observer-brief.md and follow it exactly.\n\n` +
+    `LEDGER: ${ledgerDir}\n` +
+    `HANDOFF: ${handoffPath}\n` +
+    `DECISIONS: ${observerDir}/decisions.md\n` +
+    `DELTAS: ${observerDir}/deltas\n` +
+    `LANDED: sh "${skillDir}/observer-ledger.sh" landed "${loopDir}"\n` +
+    `REPORT: ${reportPath}\n\n` +
+    `This is run ${runNumber}. Return your classes through the structured output. The report file is ` +
+    `the long form, so do not repeat it in your final text.`
+  )
+}
+
+// Confidence is counted from evidence, not taken from the model. Returns null for a class that does
+// not meet the bar to be shown at all: one bug, or bugs that never recurred across runs.
+function classConfidence(c, members) {
+  const runs = new Set(members.map(id => id.split('.')[0]))
+  if (members.length < 2 || runs.size < 2) return null
+  const eliminated = new Set((c.eliminated || []).filter(id => members.includes(id))).size
+  // A confirmed sibling must point at code, or it is just a stronger-sounding guess.
+  const confirmed = (c.siblings || []).filter(s => s.verdict === 'confirmed' && /\S+:\d+/.test(s.evidence || '')).length
+  // One lens can manufacture a pattern out of its own theme, so it alone never reaches high.
+  const high = members.length >= 3 && confirmed >= 1 && eliminated * 2 > members.length && c.lensCount >= 2
+  return high ? 'high' : 'medium'
+}
+
+// The observer is advisory: nothing here may cost the review result it runs after.
+async function observe(runRecords, blocked, allHitl) {
+  const reportPath = `${observerDir}/report-run-${runNumber}.md`
+  const result = (status, extra) => ({ status, reportPath: null, classes: [], hiddenClasses: 0, ...extra })
+  if (!runNumber) return result('disabled')
+  if (!runRecords.length) return result('no-findings')
+  try {
+    const written = await agent(scribePrompt(runRecords.map(renderLedgerEntry).join('\n')),
+      { label: 'ledger', phase: 'Observe', model: runnerModel })
+    if (typeof written !== 'string' || !written.includes('BCR_LEDGER_OK')) return result('ledger-failed')
+    if (runNumber < OBSERVER_FROM_RUN) return result('first-run')
+    if (blocked.length) return result('blocked')
+
+    const out = await agent(observerPrompt(reportPath),
+      { label: 'observer', phase: 'Observe', schema: OBSERVE_SCHEMA, model: observerModel })
+    if (!out) return result('failed')
+
+    let hiddenClasses = 0
+    const shown = []
+    for (const c of out.classes || []) {
+      const members = [...new Set((c.members || []).map(id => id.trim()).filter(id => /^R\d+\.\d+$/.test(id)))]
+      const confidence = classConfidence(c, members)
+      if (confidence) shown.push({ ...c, members, confidence })
+      else hiddenClasses++
+    }
+    shown.sort((x, y) => (x.confidence === y.confidence ? 0 : x.confidence === 'high' ? -1 : 1))
+    const classes = shown.map((c, i) => {
+      const id = `C${i + 1}`
+      const decisions = allHitl.filter(h => !h.classId && c.members.includes(h.ledgerId))
+      decisions.forEach(h => { h.classId = id })
+      return { ...c, id, decisionItems: decisions.map(h => h.title) }
+    })
+    return result(classes.length ? 'class-found' : 'no-class', { reportPath, classes, hiddenClasses })
+  } catch (e) {
+    log(`Observer failed: ${e.message}. The review result above is unaffected.`)
+    return result('failed')
+  }
 }
 
 // ---- loop ----------------------------------------------------------------
@@ -287,6 +451,7 @@ const hitlKeys = new Set()   // surfaced to human already — suppress on re-app
 const fixedKeys = new Set()  // auto-fixed — if codex re-flags, the fix was insufficient -> escalate
 const allFixed = []
 const allHitl = []
+const runRecords = []  // every finding this run raised, with its ledger id, lens and disposition
 const blocked = []   // review-runner failures (error verdict / dropped agent) — never silently treated as clean
 let lastVerdict = 'unknown'
 let round = 0
@@ -298,10 +463,6 @@ while (round < maxRounds && dry < 1 && !blocked.length) {
   // (needs-pick / intent-check / unclear/rejected) and feed it into codex's focus this round
   // so it doesn't re-raise the same topics. Fixed items are intentionally NOT here — we still
   // want codex to re-check that fixes held (a re-flag of a fix escalates below).
-  // Collapse ALL whitespace in every field: suppress lines travel inside the runner's quoted
-  // heredoc, so each item must stay a single line (a stray newline could even collide with the
-  // heredoc delimiter). Single-line items also keep the numbered list parseable for codex.
-  const oneLine = (s, cap) => (s || '').replace(/\s+/g, ' ').trim().slice(0, cap)
   const suppress = allHitl.map(h => ({
     file: oneLine(h.file, 200) || 'UNKNOWN',
     title: oneLine(h.title, 200) || '(untitled)',
@@ -314,6 +475,7 @@ while (round < maxRounds && dry < 1 && !blocked.length) {
   const reviews = (await parallel(
     lenses.map((lens, i) => () =>
       agent(reviewPrompt(lens, i, suppress, round), { label: `review:lens${i + 1}`, phase: 'Review', schema: FINDINGS_SCHEMA, model: runnerModel })
+        .then(r => (r ? { ...r, lens: i + 1 } : r))
     )
   )).filter(Boolean)
 
@@ -350,13 +512,17 @@ while (round < maxRounds && dry < 1 && !blocked.length) {
       if (roundKeys.has(k)) continue
       roundKeys.add(k)
       if (hitlKeys.has(k)) continue                 // human already owns it
+      const record = { ...f, lens: r.lens, round, id: `R${runNumber || 0}.${runRecords.length + 1}` }
+      runRecords.push(record)
       if (fixedKeys.has(k)) {                        // fix didn't satisfy codex -> escalate, don't re-fix
-        allHitl.push({ file: f.file, title: f.title, action: 'unclear', claim_accuracy: 0, intent_match: 0, round,
-          detail: `Re-flagged after an auto-fix in an earlier round — the fix did not satisfy codex. Needs your eyes. Codex says: ${f.recommendation || f.body}` })
+        const detail = `Re-flagged after an auto-fix in an earlier round — the fix did not satisfy codex. Needs your eyes. Codex says: ${f.recommendation || f.body}`
+        record.disposition = 'unclear'
+        record.dispositionDetail = detail
+        allHitl.push({ file: f.file, title: f.title, action: 'unclear', claim_accuracy: 0, intent_match: 0, round, ledgerId: record.id, detail })
         hitlKeys.add(k)
         continue
       }
-      fresh.push(f)
+      fresh.push(record)
     }
   }
 
@@ -385,18 +551,21 @@ while (round < maxRounds && dry < 1 && !blocked.length) {
   for (const r of fixResults) {
     for (const item of (r.results || [])) {
       const rec = { ...item, file: r.file, round }
+      const sources = (byFile[r.file] || [])
+        .filter(f => (f.title || '').trim().toLowerCase() === (item.title || '').trim().toLowerCase())
+      for (const f of sources) {
+        f.disposition = item.action
+        f.dispositionDetail = item.detail
+      }
       if (item.action === 'fixed') {
         allFixed.push(rec)
         fixedThisRound++
         // mark its source finding(s) as fixed so re-appearance escalates
-        for (const f of (byFile[r.file] || [])) {
-          if ((f.title || '').trim().toLowerCase() === (item.title || '').trim().toLowerCase()) fixedKeys.add(findingKey(f))
-        }
+        for (const f of sources) fixedKeys.add(findingKey(f))
       } else {
+        if (sources.length) rec.ledgerId = sources[0].id
         allHitl.push(rec)
-        for (const f of (byFile[r.file] || [])) {
-          if ((f.title || '').trim().toLowerCase() === (item.title || '').trim().toLowerCase()) hitlKeys.add(findingKey(f))
-        }
+        for (const f of sources) hitlKeys.add(findingKey(f))
       }
     }
   }
@@ -409,15 +578,24 @@ while (round < maxRounds && dry < 1 && !blocked.length) {
   }
 }
 
+const observer = await observe(runRecords, blocked, allHitl)
+const observerNote =
+  observer.classes.length ? ` Observer: ${observer.classes.length} possible shared cause(s) — see observer.classes.` :
+  observer.status === 'disabled' ? ' Observer off: no runNumber, so this run was not recorded.' :
+  ['failed', 'ledger-failed'].includes(observer.status) ? ` Observer did not complete (${observer.status}); the review result is unaffected.` :
+  ''
+
 return {
   rounds: round,
   finalVerdict: blocked.length ? 'blocked' : lastVerdict,
   fixed: allFixed,
   hitl: allHitl,
   blocked,
+  observer,
   note:
     (blocked.length ? `⚠ BLOCKED: ${blocked.length} review-runner failure(s) — coverage is incomplete, do NOT trust this as clean. Investigate before relying on results. ` : '') +
     `${allFixed.length} finding(s) auto-fixed across ${round} round(s); ` +
     `${allHitl.length} need your decision (HITL). Final codex verdict: ${blocked.length ? 'blocked' : lastVerdict}.` +
-    (round >= maxRounds ? ` (Hit maxRounds=${maxRounds} cap.)` : ''),
+    (round >= maxRounds ? ` (Hit maxRounds=${maxRounds} cap.)` : '') +
+    observerNote,
 }
