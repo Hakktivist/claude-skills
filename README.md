@@ -61,7 +61,7 @@ general-purpose helpers. Excludes `daily-update` and `find-skills`.
 | [`executing-plans`](skills/executing-plans/) | Dep of `subagent-driven-development` |
 | [`using-git-worktrees`](skills/using-git-worktrees/) | Dep of `subagent-driven-development` |
 | [`finishing-a-development-branch`](skills/finishing-a-development-branch/) | Dep of `subagent-driven-development` |
-| [`manual-review`](skills/manual-review/) | Dep of `review-buddy`; lists changed files in review order |
+| [`manual-review`](skills/manual-review/) | Dep of `review-buddy`; lists changed files grouped as needs human review, mechanical, codegen, tests, frontend only (`by-layer` for stack order) |
 | [`grill-me`](skills/grill-me/) | Dep of `scoping-linear-tickets` |
 | [`brainstorming`](skills/brainstorming/) | Dep of `writing-plans` |
 | [`systematic-debugging`](skills/systematic-debugging/) | General-purpose |
