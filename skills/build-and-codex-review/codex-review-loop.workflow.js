@@ -15,11 +15,14 @@ export const meta = {
 //                             Passed by PATH, not text: runners `cat` it straight into the codex
 //                             command and fixers Read it themselves, so the multi-KB handoff never
 //                             sits in a runner's context and never gets re-typed through Write.
+// args.skillDir:    string    absolute path to this skill (the Skill tool's "Base directory"),
+//                             for observer-brief.md, observer-ledger.sh and the default arcSkillPath.
 // Optional knobs (these keep defaults):
 // args.scope:       string    codex --scope (default 'working-tree')
 // args.base:        string?   optional --base ref
 // args.maxRounds:   number    safety cap (default 3)
-// args.arcSkillPath:string    absolute path to address-review-comments/SKILL.md
+// args.arcSkillPath:string?   absolute path to address-review-comments/SKILL.md
+//                             (default: the address-review-comments skill beside skillDir)
 // args.progressDir: string?   absolute path to an empty per-run dir. Each lens points
 //                             CLAUDE_PLUGIN_DATA at "<progressDir>/lens<N>", which relocates the
 //                             codex companion's job state (state.mjs:41) so its live progress log
@@ -36,7 +39,6 @@ export const meta = {
 //                             it the review still runs, but this run is neither recorded nor observed.
 // args.observerModel:string?  model for the OBSERVER agent (default 'opus'). It reasons across every
 //                             run and reads code, and a wrong class costs a human decision.
-// args.skillDir:    string?   absolute path to this skill, for observer-brief.md and observer-ledger.sh.
 //
 // The harness sometimes delivers args as a JSON-encoded STRING; reading .lenses off a
 // string yields undefined, and the old defaults silently degraded the run to a generic
@@ -63,7 +65,6 @@ const scope = SCOPES.includes(scopeArg) ? scopeArg : 'working-tree'
 if (scopeArg && scope !== scopeArg) log(`WARNING: invalid scope "${scopeArg}" — falling back to working-tree.`)
 const base = a.base
 const maxRounds = a.maxRounds || 3
-const arcSkillPath = a.arcSkillPath || '/Users/alannguyen/.claude/skills/address-review-comments/SKILL.md'
 // Review runners do zero code reasoning (invoke codex, transcribe its JSON) — pin them to a
 // cheap model by default so a strong session model isn't burned on mechanical transcription.
 const runnerModel = a.runnerModel || 'sonnet'
@@ -73,10 +74,18 @@ const runnerModel = a.runnerModel || 'sonnet'
 // misapplies the two-dimensional matrix (the expensive failure is a confident wrong fix).
 const fixerModel = a.fixerModel || 'opus'
 const observerModel = a.observerModel || 'opus'
-const skillDir = a.skillDir || '/Users/alannguyen/.claude/skills/build-and-codex-review'
+// The script has no filesystem or $HOME, so it cannot find its own skill — the orchestrator passes
+// the base directory the Skill tool printed. A guessed default would be one person's home and
+// would leave fixers without their method on anyone else's machine, so a missing one is fatal.
+if (typeof a.skillDir !== 'string' || !a.skillDir.length) {
+  throw new Error('codex-review-loop: skillDir missing — pass this skill\'s base directory as args.skillDir')
+}
+const skillDir = a.skillDir.replace(/\/+$/, '')
 if (!SAFE_PATH.test(skillDir)) {
   throw new Error(`codex-review-loop: skillDir "${skillDir}" contains unsafe characters — refusing to interpret it in an agent's shell command`)
 }
+// install.sh links every skill side by side, in the repo and in ~/.claude/skills alike.
+const arcSkillPath = a.arcSkillPath || `${skillDir.replace(/\/[^/]*$/, '')}/address-review-comments/SKILL.md`
 // The loop dir holds the handoff, so it stays put across continues while progressDir is fresh each
 // run. That makes it the one place a later run can find what the earlier ones raised.
 const loopDir = handoffPath.replace(/\/[^/]*$/, '')

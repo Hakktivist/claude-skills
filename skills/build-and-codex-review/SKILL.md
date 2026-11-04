@@ -82,13 +82,13 @@ Invoke the **Workflow** tool with `scriptPath` set to this skill's `codex-review
   scope: "working-tree",    // staged + unstaged + untracked
   base: undefined,          // or a ref for branch review
   maxRounds: 3,
-  arcSkillPath: "/Users/alannguyen/.claude/skills/address-review-comments/SKILL.md",
+  skillDir: "<this skill's base directory>",  // required; fixers find address-review-comments beside it
   runnerModel: "sonnet",    // review RUNNERS only; omit to keep the default
   fixerModel: "opus" }      // FIXERS; omit to keep the default (also opus)
 ```
 The Workflow runs each lens as a codex adversarial-review, dedups findings, dispatches one code-reading fixer per file (applying [[address-review-comments]]'s two-dimensional matrix), and loops until codex stops raising fresh findings or only HITL items remain. This is an explicit, skill-directed Workflow invocation — that's the opt-in; just call it.
 
-**`lenses` and `handoffPath` are required.** The script parses stringified-args deliveries itself and throws `lenses/handoffPath missing` if the review spec still isn't there — it will never fall back to a generic single-lens review. If it throws, relaunch with `args` as a real JSON object; do not hardcode a temp copy of the script. The path must be plain (letters, digits, `._/ -`); it is interpolated into a shell command, so the script rejects anything shell-active.
+**`lenses`, `handoffPath` and `skillDir` are required.** `skillDir` is the "Base directory" the Skill tool printed when this skill loaded; the script can't find it itself. The script parses stringified-args deliveries itself and throws `lenses/handoffPath missing` if the review spec still isn't there — it will never fall back to a generic single-lens review. If it throws, relaunch with `args` as a real JSON object; do not hardcode a temp copy of the script. The path must be plain (letters, digits, `._/ -`); it is interpolated into a shell command, so the script rejects anything shell-active.
 
 **Adjudicated items are fed back to codex each round.** HITL items aren't fixed, so the code stays the same and codex would otherwise re-flag them every round — wasting review credits. Once an item is surfaced to the human (needs-pick / intent-check / unclear), the loop injects it into the next round's codex focus as an "already adjudicated — do not re-report" list, so codex stops re-analyzing it. Fixes are *not* suppressed — codex still re-checks that they held.
 

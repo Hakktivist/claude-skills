@@ -42,9 +42,17 @@ async function run({ args = {}, rounds = [{}], fixes = {}, observer, scribe = 'B
   }
   const parallel = thunks => Promise.all(thunks.map(t => t().catch(() => null)))
   const fn = new AsyncFunction('args', 'agent', 'parallel', 'log', 'phase', src)
-  const base = { lenses: ['one', 'two'], handoffPath: '/tmp/loop/HANDOFF.md', progressDir: '/tmp/progress', maxRounds: 3 }
-  const result = await fn({ ...base, ...args }, agent, parallel, () => {}, () => {})
-  return { result, calls, labels: calls.map(c => c.label) }
+  const base = {
+    lenses: ['one', 'two'], handoffPath: '/tmp/loop/HANDOFF.md', progressDir: '/tmp/progress', maxRounds: 3,
+    skillDir: '/home/someone/skills/build-and-codex-review',
+  }
+  try {
+    const result = await fn({ ...base, ...args }, agent, parallel, () => {}, () => {})
+    return { result, calls, labels: calls.map(c => c.label) }
+  } catch (e) {
+    e.calls = calls
+    throw e
+  }
 }
 
 const klass = over => ({
@@ -198,6 +206,30 @@ test('ledger text cannot break out of the heredoc', async () => {
 
 test('an unsafe skill dir is refused before any spend', async () => {
   await assert.rejects(run({ args: { runNumber: 1, skillDir: '/tmp/$(whoami)' } }), /skillDir/)
+})
+
+test('a missing skill dir is refused before any agent runs', async () => {
+  for (const skillDir of [undefined, '']) {
+    await assert.rejects(run({ args: { runNumber: 1, skillDir }, rounds: oneFinding }), e => {
+      assert.match(e.message, /skillDir/)
+      assert.equal(e.calls.length, 0)
+      return true
+    })
+  }
+})
+
+test('fixers read address-review-comments from beside this skill', async () => {
+  for (const skillDir of ['/home/someone/skills/build-and-codex-review', '/home/someone/skills/build-and-codex-review/']) {
+    const { calls } = await run({ args: { runNumber: 1, skillDir }, rounds: oneFinding })
+    const fix = calls.find(c => c.label.startsWith('fix:'))
+    assert.ok(fix.prompt.includes('read /home/someone/skills/address-review-comments/SKILL.md '), fix.prompt.slice(0, 200))
+  }
+  const { calls } = await run({ args: { runNumber: 1, arcSkillPath: '/elsewhere/arc/SKILL.md' }, rounds: oneFinding })
+  assert.ok(calls.find(c => c.label.startsWith('fix:')).prompt.includes('read /elsewhere/arc/SKILL.md '))
+})
+
+test('the script carries no one person\'s home directory', async () => {
+  assert.doesNotMatch(src, /\/Users\/|\/home\/[a-z]/)
 })
 
 let failed = 0
